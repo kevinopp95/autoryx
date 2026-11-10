@@ -619,6 +619,18 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 .pid-chips button { min-height: 38px; padding: 0 14px; border-radius: 999px; background: var(--card-2); font-size: 13.5px; font-weight: 500; color: var(--ink-2); }
 .pid-chips button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-ink); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .pid-chips button:disabled { opacity: .45; cursor: not-allowed; }
+.pid-chips button.miss { text-decoration: line-through; text-decoration-thickness: 1px; }
+.pcard.missing { opacity: .6; }
+.pval-none { font: 500 14px/1.3 var(--f-ui); letter-spacing: 0; color: var(--ink-3); }
+.pcard.onyx .pval-none { color: var(--onyx-ink-2); }
+.offline-bar { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--r-md, 12px); background: var(--warn-soft); color: var(--warn); font-size: 13.5px; font-weight: 500; }
+.scope { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--card-2); }
+.scope button { min-height: 36px; padding: 0 14px; border-radius: 999px; font-size: 13.5px; font-weight: 500; color: var(--ink-2); }
+.scope button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: var(--shadow-1); }
+.mod .mod-act { display: flex; justify-content: flex-end; }
+.scan-prog { height: 4px; border-radius: 4px; background: var(--card-2); overflow: hidden; margin-top: 10px; }
+.scan-prog i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+.mon-note { font-size: 13px; color: var(--ink-3); margin: 0; }
 .pid-picker { margin-bottom: 14px; }
 .live-two { display: grid; gap: 14px; }
 .chrono-time { display: flex; align-items: baseline; gap: 6px; font: 300 64px/1 var(--f-display); letter-spacing: -.04em; margin: 4px 0 12px; }
@@ -704,6 +716,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="renault-ecus.js"></script>
 <script src="obd-ble.js"></script>
 </head>
 <body>
@@ -768,6 +781,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
   </header>
 
   <main>
+    <div class="offline-bar" id="offlineBar" hidden role="status">Pas de réseau : l'app continue de fonctionner avec le boîtier, mais ne rechargez pas la page avant d'avoir retrouvé du réseau.</div>
     <!-- Dashboard -->
     <div class="screen active" id="screen-dashboard">
       <div class="dash">
@@ -1069,6 +1083,10 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
         <div><h1 class="scr-title">Scan complet</h1><p class="scr-sub">Chaque calculateur interrogé : identification, codes défaut, état sur le réseau.</p></div>
         <div class="head-actions">
           <button class="btn btn-soft" onclick="copyScanLog()" id="copyLogBtn" disabled><svg class="i"><use href="#i-copy"/></svg>Copier le journal</button>
+          <div class="scope" id="scanScope" role="group" aria-label="Étendue du scan Renault" hidden>
+            <button aria-pressed="true" onclick="setScanScope(false)" id="scopeQuick">Principaux</button>
+            <button aria-pressed="false" onclick="setScanScope(true)" id="scopeAll">Tous</button>
+          </div>
           <button class="btn btn-primary" onclick="runFullScan()" id="fullScanBtn"><svg class="i"><use href="#i-network"/></svg>Lancer le scan</button>
         </div>
       </header>
@@ -1077,6 +1095,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
         <section class="panel" id="prepostPanel" hidden></section>
         <section class="panel">
           <div class="panel-h"><span class="panel-t">Topologie du réseau</span><span class="panel-sub push" id="topoMeta">Lancez le scan pour cartographier les calculateurs</span></div>
+          <div class="scan-prog" id="scanProg" hidden><i id="scanProgBar"></i></div>
           <div class="topo" id="topo"><div class="empty">Aucun calculateur interrogé.</div></div>
         </section>
         <section id="modList" class="mod-grid"></section>
@@ -1219,7 +1238,7 @@ const SIM = {
       {pid:'04', name:'Charge moteur',      value: parseFloat((18+10*Math.abs(Math.sin(t/4))).toFixed(1)),  unit:'%',     min:0,    max:100},
       {pid:'42', name:'Tension batterie',   value: parseFloat((13.8+0.2*Math.sin(t/10)).toFixed(2)),        unit:'V',     min:9,    max:16},
       {pid:'5C', name:'Temp. huile',        value: parseFloat((94+5*Math.sin(t/15)).toFixed(1)),            unit:'°C',    min:-40,  max:180},
-      {pid:'62', name:'Pression turbo',     value: parseFloat((Math.max(0,8+16*Math.abs(Math.sin(t/2.5)))).toFixed(1)), unit:'kPa', min:0, max:300},
+      {pid:'0B', name:'Pression admission', value: parseFloat((34+40*Math.abs(Math.sin(t/2.5))).toFixed(1)), unit:'kPa', min:0, max:255},
       {pid:'2F', name:'Niveau carburant',   value: Math.round(Math.max(5,70-(t/3600)*5)),                   unit:'%',     min:0,    max:100},
       {pid:'0E', name:'Avance allumage',    value: parseFloat((8+4*Math.sin(t/2.1)).toFixed(1)),            unit:'° AV',  min:-64,  max:64},
       {pid:'06', name:'Corr. CT bank1',     value: parseFloat((-2+Math.sin(t*3)*1.2).toFixed(1)),           unit:'%',     min:-100, max:100},
@@ -1385,9 +1404,10 @@ async function api(path, opts = {}) {
   return r.json();
 }
 const DTC_STATUS = { active: 'actif', pending: 'en attente', stored: 'confirmé' };
+let _supported = null, _monitors = null;
 async function readDtcs() {
   const r = await api('/diagnostics/dtc');
-  return (r.codes || []).map(c => ({ code: c.code, status: DTC_STATUS[c.severity] || c.severity, ecu_name: c.ecu_name, description: c.description }));
+  return (r.codes || []).map(c => ({ code: c.code, status: DTC_STATUS[c.severity] || c.severity, ecu_name: c.ecu_name, ecu: c.ecu, description: c.description }));
 }
 
 // ── Connection ────────────────────────────────────────────────────────
@@ -1398,6 +1418,7 @@ function updateConnUI(ok, sim) {
   const connBtn = document.getElementById('connBtn');
   dot.className = 'conn-dot' + (ok ? (sim ? ' sim' : ' ok') : '');
   label.textContent = ok ? (sim ? 'Démo' : bleMode ? 'Bluetooth' : 'Connecté') : 'Non connecté';
+  const sc = document.getElementById('scanScope'); if (sc) sc.hidden = !(ok && bleMode);
   disc.style.display = ok ? '' : 'none';
   document.getElementById('bleDisconnBtn').hidden = !ok;
   connBtn.style.display = ok ? 'none' : '';
@@ -1446,19 +1467,21 @@ async function bleConnect(statusId = 'bleStatus') {
   ObdBle.note('Bouton « Connecter » appuyé');
   say('Démarrage de la recherche Bluetooth…');
   try {
-    if (bleMode) disconnect();
+    stopLoops();
+    if (bleMode) { bleMode = false; ObdBle.disconnect(); }
+    bleEngine.reset(); _supported = null; _monitors = null;
     const info = await ObdBle.connect(say);
     bleMode = true; simMode = false; _simCleared = false; _preScan = null; _lastScan = null;
     ObdBle.link.onLost = () => {
       if (!bleMode) return;
-      bleMode = false; liveRunning = false;
-      if (liveInterval) { clearInterval(liveInterval); liveInterval = null; setLiveUi(false); }
+      bleMode = false; stopLoops();
       updateConnUI(false, false);
       toast('Boîtier Bluetooth déconnecté', 5000);
     };
     updateConnUI(true, false);
     say(`Connecté à ${info.name}${info.version ? ' (' + info.version + ')' : ''}${info.protocol ? ' · ' + info.protocol : ''}`);
     try { const v = await api('/vehicle/vin'); autoVin(v.vin); } catch (e) { toast(e.message, 5000); }
+    try { _supported = await api('/live/supported'); ObdBle.note('PID fournis : ' + _supported.join(' ')); } catch {}
     toast('Boîtier connecté');
     showScreen('dashboard');
   } catch (e) {
@@ -1480,7 +1503,7 @@ function copyBleLog() {
 }
 window.addEventListener('error', e => ObdBle.note('Erreur page : ' + e.message));
 window.addEventListener('unhandledrejection', e => ObdBle.note('Erreur : ' + (e.reason && e.reason.message || e.reason)));
-ObdBle.note(`Page chargée · version 2026-11-10.3 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
+ObdBle.note(`Page chargée · version 2026-11-10.4 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
 if (!navigator.bluetooth) {
   const chip = document.getElementById('bleSupport');
   chip.textContent = 'Ouvrir dans Bluefy'; chip.className = 'chip push warn';
@@ -1543,17 +1566,26 @@ async function connect() {
   }
 }
 
+function stopLoops() {
+  liveRunning = false;
+  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+  setLiveUi(false);
+}
 function disconnect() {
-  if (bleMode) { bleMode = false; ObdBle.disconnect(); }
+  stopLoops();
+  if (bleMode) { bleMode = false; ObdBle.disconnect(); bleEngine.reset(); }
   else if (!simMode) api('/connection/disconnect', {method: 'POST'}).catch(() => {});
   simMode = false;
   connected = false;
-  liveRunning = false;
-  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+  _supported = null; _monitors = null;
   updateConnUI(false, false);
-  setLiveUi(false);
+  const st = document.getElementById('bleStatus'); if (st) st.textContent = 'Déconnecté. Vous pouvez relancer une recherche.';
   toast('Déconnecté');
 }
+// Bluefy shows an error page when the app is reloaded without network (underground garage): warn before leaving.
+window.addEventListener('beforeunload', e => { if (bleMode || _logRunning) { e.preventDefault(); e.returnValue = ''; } });
+function paintOffline() { const b = document.getElementById('offlineBar'); if (b) b.hidden = navigator.onLine; }
+window.addEventListener('online', paintOffline); window.addEventListener('offline', paintOffline); paintOffline();
 
 // ── Dashboard ─────────────────────────────────────────────────────────
 function computeHealthScore(dtcs, ecus) {
@@ -1665,9 +1697,11 @@ async function refreshDashboard(fromScan) {
   updateHealthScore(dtcs, ecus);
   renderIntroStatus();
   renderAssist(_dash.dtcs, ecus);
-  const ready = SIM_MONITORS.filter(m => m.ready).length;
-  document.getElementById('fcMon').textContent = `${ready}/${SIM_MONITORS.length}`;
-  document.getElementById('fcMonDots').innerHTML = SIM_MONITORS.map(m => `<i class="${m.ready ? 'on' : ''}"></i>`).join('');
+  if (simMode) _monitors = SIM_MONITORS;
+  else if (!_monitors) _monitors = await api('/diagnostics/monitors').then(r => r.monitors).catch(() => null);
+  const mons = _monitors || [];
+  document.getElementById('fcMon').textContent = mons.length ? `${mons.filter(m => m.ready).length}/${mons.length}` : '—';
+  document.getElementById('fcMonDots').innerHTML = mons.map(m => `<i class="${m.ready ? 'on' : ''}"></i>`).join('');
   document.getElementById('assistDot').classList.remove('busy');
 }
 
@@ -1778,13 +1812,18 @@ function openTipFor(i) {
 
 function applyLive(d) {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('kpiRpm', Math.round(d.rpm)); set('kpiSpeed', Math.round(d.speed));
-  set('kpiTemp', d.temp.toFixed(0)); set('kpiBat', d.bat.toFixed(1).replace('.', ','));
-  set('kpiLoad', d.load != null ? d.load.toFixed(0) : '—'); set('kpiTps', d.tps != null ? d.tps.toFixed(0) : '—');
-  document.getElementById('fcTempAlert').hidden = d.temp < 105;
+  const has = x => typeof x === 'number' && Number.isFinite(x);
+  set('kpiRpm', has(d.rpm) ? Math.round(d.rpm) : '—'); set('kpiSpeed', has(d.speed) ? Math.round(d.speed) : '—');
+  set('kpiTemp', has(d.temp) ? d.temp.toFixed(0) : '—'); set('kpiBat', has(d.bat) ? d.bat.toFixed(1).replace('.', ',') : '—');
+  set('kpiLoad', has(d.load) ? d.load.toFixed(0) : '—'); set('kpiTps', has(d.tps) ? d.tps.toFixed(0) : '—');
+  document.getElementById('fcTempAlert').hidden = !has(d.temp) || d.temp < 105;
+  if (!has(d.rpm)) d = { ...d, rpm: 0 };
+  if (!has(d.bat)) document.getElementById('batNote').textContent = 'Tension non lue';
+  else {
   const frac = Math.min(1, Math.max(0, (d.bat - 11.5) / (14.8 - 11.5)));
   document.getElementById('batArc').style.strokeDashoffset = (100 - frac * 100).toFixed(1);
   document.getElementById('batNote').textContent = d.bat >= 13.2 ? 'Alternateur en charge' : d.bat >= 12.4 ? 'Charge correcte' : d.bat >= 12 ? 'Charge faible' : 'Batterie déchargée';
+  }
   _rpmHist.push(d.rpm); if (_rpmHist.length > 20) _rpmHist.shift();
   const max = Math.max(3500, ..._rpmHist);
   document.getElementById('rpmBars').innerHTML = _rpmHist.map(v => `<i style="height:${Math.max(8, v / max * 100).toFixed(0)}%"></i>`).join('');
@@ -1795,7 +1834,7 @@ async function dashTick() {
   const p = await api('/live/parameters').catch(() => null);
   if (!p) return;
   const v = pid => (p.find(x => x.pid === pid) || {}).value;
-  applyLive({ rpm: v('0C') || 0, speed: v('0D') || 0, temp: v('05') || 0, bat: v('42') || 0 });
+  applyLive({ rpm: v('0C'), speed: v('0D'), temp: v('05'), bat: v('42'), load: v('04'), tps: v('11') });
 }
 setInterval(() => {
   if (!liveRunning && document.getElementById('screen-dashboard').classList.contains('active')) dashTick();
@@ -1849,20 +1888,20 @@ async function fetchLive() {
   if (simMode) { d = _simStep(); params = SIM.live(); }
   else {
     params = await api('/live/parameters').catch(() => []);
-    const v = pid => (params.find(x => x.pid === pid) || {}).value || 0;
+    const v = pid => (params.find(x => x.pid === pid) || {}).value;
     d = { rpm: v('0C'), speed: v('0D'), temp: v('05'), bat: v('42'), maf: v('10'), tps: v('11'), load: v('04') };
   }
   const map = {};
   params.forEach(p => { map[p.pid] = { ...p }; });
   const ov = { '0C': d.rpm, '0D': d.speed, '05': d.temp, '42': d.bat, '10': d.maf, '11': d.tps, '04': d.load };
-  Object.entries(ov).forEach(([k, v]) => { if (map[k]) map[k].value = v; });
+  Object.entries(ov).forEach(([k, v]) => { if (map[k] && v != null) map[k].value = v; });
   _liveMap = map;
-  _liveHist = [..._liveHist.slice(-29), Math.round(d.rpm)];
+  _liveHist = [..._liveHist.slice(-29), Math.round(d.rpm || 0)];
   applyLive(d);
   updateLiveGrid();
   updateChart(_liveHist);
   updateHud();
-  chronoTick(d.speed);
+  chronoTick(d.speed || 0);
 }
 
 // ── DTC base locale (P / C / B / U) ──────────────────────────────────
@@ -2143,8 +2182,10 @@ const SIM_MODE06 = [
   {id:'misf_cyl4', name:'Ratés — cylindre 4',              val:0,    min:0, max:50,  unit:'%',   pass:true},
 ];
 
-function loadMonitors() {
-  const monitors = simMode ? SIM_MONITORS : SIM_MONITORS; // same for now
+async function loadMonitors() {
+  if (!needLink()) return;
+  if (!simMode) return loadRealMonitors();
+  const monitors = SIM_MONITORS;
   const ready = monitors.filter(m => m.ready).length;
   document.getElementById('monitorBadge').textContent = ready + '/' + monitors.length + ' prêts';
   document.getElementById('monitorGrid').innerHTML = monitors.map(m => `
@@ -2167,6 +2208,33 @@ function loadMonitors() {
       </div>
     </div>`).join('');
   toast('Moniteurs chargés ✓');
+}
+
+async function loadRealMonitors() {
+  const grid = document.getElementById('monitorGrid'), ff = document.getElementById('freezeFrame');
+  grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="spinner"></div></div>';
+  try {
+    const r = await api('/diagnostics/monitors');
+    _monitors = r.monitors;
+    const ready = r.monitors.filter(m => m.ready).length;
+    document.getElementById('monitorBadge').textContent = `${ready}/${r.monitors.length} prêts`;
+    grid.innerHTML = r.monitors.map(m => `
+    <div class="monitor-item">
+      <div class="monitor-dot" style="background:${m.ready ? 'var(--ok)' : 'var(--warn)'}"></div>
+      <div class="monitor-name">${esc(m.name)}</div>
+      <div class="monitor-status" style="color:${m.ready ? 'var(--ok)' : 'var(--warn)'}">${m.ready ? 'PRÊT' : 'EN COURS'}</div>
+    </div>`).join('') + `<p class="mon-note" style="grid-column:1/-1">Moteur ${r.ignition} · voyant moteur ${r.mil ? 'allumé' : 'éteint'} · ${r.dtc_count} code${r.dtc_count > 1 ? 's' : ''} OBD signalé${r.dtc_count > 1 ? 's' : ''}. Seuls les moniteurs gérés par ce véhicule sont listés.</p>`;
+  } catch (e) {
+    document.getElementById('monitorBadge').textContent = '—';
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">${esc(e.message)}</div>`;
+  }
+  try {
+    const f = await api('/diagnostics/freeze');
+    ff.innerHTML = !f.dtc ? '<div class="empty">Aucune donnée figée : aucun défaut n\'a déclenché d\'enregistrement.</div>' : `
+      <div style="font-size:12px;color:var(--ink-3);margin-bottom:8px">Données capturées lors du déclenchement de <b class="mono">${esc(f.dtc)}</b></div>
+      <div class="ff-grid">${f.values.map(v => `<div class="ff-item"><div class="ff-label">${esc(v.name)}</div><div class="ff-val">${fr(v.value, v.unit === 'V' ? 1 : 0)}<span style="font-size:11.5px;color:var(--ink-3);font-weight:400"> ${esc(v.unit)}</span></div></div>`).join('')}</div>`;
+  } catch (e) { ff.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  document.getElementById('mode06Grid').innerHTML = '<div class="empty">Les tests embarqués (mode 06) ne sont pas encore lus en Bluetooth direct. Les valeurs de démo ne sont jamais affichées sur un vrai véhicule.</div>';
 }
 
 // ── Logger ────────────────────────────────────────────────────────────
@@ -2577,12 +2645,29 @@ async function runFullScan() {
   const btn = document.getElementById('fullScanBtn');
   btn.disabled = true; btn.innerHTML = `<span class="spinner" style="width:18px;height:18px;border-width:2px;border-color:rgba(255,255,255,.35);border-top-color:#fff"></span>Scan en cours`;
   const t0 = performance.now();
+  if (bleMode) {
+    const hadLive = liveRunning; stopLoops();
+    const prog = document.getElementById('scanProg'), bar = document.getElementById('scanProgBar');
+    prog.hidden = false;
+    document.getElementById('topo').innerHTML = '<div class="empty">Interrogation des calculateurs Renault…</div>';
+    try {
+      await api('/ecu/scan', { all: _scanAll, onProgress: ev => {
+        bar.style.width = ((ev.index + 1) / ev.total * 100).toFixed(1) + '%';
+        document.getElementById('topoMeta').textContent = `${ev.index + 1}/${ev.total} · ${ev.current[1]} · ${ev.found.length} trouvé${ev.found.length > 1 ? 's' : ''}`;
+        btn.innerHTML = `<span class="spinner" style="width:18px;height:18px;border-width:2px;border-color:rgba(255,255,255,.35);border-top-color:#fff"></span>${ev.index + 1}/${ev.total}`;
+      } });
+    } catch (e) { toast('Scan interrompu : ' + e.message, 5000); }
+    prog.hidden = true;
+    if (hadLive && bleMode) toggleLive();
+  }
   const ecus = simMode ? SIM.ecus() : await api('/ecu/list').catch(() => []);
   const raw = simMode ? SIM.dtc() : await readDtcs().catch(() => []);
   const dtcs = raw.map(dtcEnrich);
   document.getElementById('modList').innerHTML = '';
   const lanes = renderTopo(ecus);
   for (let i = 0; i < ecus.length; i++) { await sleep(simMode ? 230 : 0); markNode(ecus[i], i, ecus.length, lanes); }
+  if (!ecus.length) document.getElementById('topoMeta').textContent = 'Aucun calculateur n\'a répondu';
+  if (bleMode) { _dash.ecus = ecus; _dash.dtcs = dtcs; renderHotspots(ecus, true); renderEcuGrid(ecus); renderDashDtc(dtcs); updateHealthScore(dtcs, ecus); }
   const odo = (ecus.find(e => e.odometer) || {}).km ?? null;
   const scan = { t: new Date(), ecus, dtcs, vin: _vehicle ? _vehicle.vin : '', km: odo, ms: performance.now() - t0 };
   if (!_preScan) _preScan = scan;
@@ -2593,6 +2678,28 @@ async function runFullScan() {
   document.getElementById('logFold').hidden = false;
   document.getElementById('copyLogBtn').disabled = false;
   btn.disabled = false; btn.innerHTML = `${svgI('refresh')}Relancer le scan`;
+}
+
+let _scanAll = false;
+function setScanScope(all) {
+  _scanAll = all;
+  document.getElementById('scopeQuick').setAttribute('aria-pressed', String(!all));
+  document.getElementById('scopeAll').setAttribute('aria-pressed', String(all));
+}
+const _clearArm = {};
+async function clearEcuDtc(addr) {
+  const e = (_lastScan && _lastScan.ecus.find(x => x.address === addr)) || { name: addr };
+  if (!_clearArm[addr] || Date.now() - _clearArm[addr] > 5000) {
+    _clearArm[addr] = Date.now();
+    toast(`Appuyez encore pour effacer les codes de « ${shortName(e.name)} ». Contact mis, moteur arrêté.`, 5000);
+    return;
+  }
+  delete _clearArm[addr];
+  try {
+    await api('/ecu/clear', { address: addr });
+    toast('Codes effacés · relecture…');
+    runFullScan();
+  } catch (err) { toast(err.message, 6000); }
 }
 
 function renderScanSummary(s) {
@@ -2612,11 +2719,13 @@ function renderModules(s) {
     const st = ecuState(e);
     const chip = { ok: ['ok', 'OK'], warn: ['warn', '1 défaut'], err: ['crit', e.dtc_count + ' défauts'], off: ['', 'Injoignable'] }[st];
     const codes = s.dtcs.filter(d => d.ecu === e.address);
+    const clr = bleMode && e.dtc_count && e.address !== '7E0' ? `<div class="mod-act"><button class="btn btn-soft sm" onclick="clearEcuDtc('${esc(e.address)}')">${svgI('x')}Effacer les codes</button></div>` : '';
     return `<article class="mod" id="mod_${e.address}">
       <div class="mod-h"><b>${esc(shortName(e.name))}</b><span class="mono">${esc(e.address)}</span><span class="chip ${chip[0]}">${chip[1]}</span></div>
       ${e.reachable ? `<dl><dt>Référence</dt><dd>${esc(e.part || '—')}</dd><dt>Logiciel</dt><dd>${esc(e.sw || '—')}</dd><dt>Matériel</dt><dd>${esc(e.hw || '—')}</dd><dt>Codage</dt><dd>${esc(e.coding || '—')}</dd>${e.km != null ? `<dt>Kilométrage</dt><dd>${fmtKm(e.km)}</dd>` : ''}</dl>`
         : `<p class="panel-sub" style="margin:0">Pas de réponse. Calculateur absent sur cette version ou non alimenté.</p>`}
       ${codes.length ? `<div class="codes">${codes.map(d => `<div><span class="code">${esc(d.code)}</span>${esc(d.description || '')}</div>`).join('')}</div>` : ''}
+      ${e.protocol ? `<p class="panel-sub" style="margin:0">Protocole ${esc(e.protocol)} · réponse ${esc(e.rx || '')}</p>` : ''}${clr}
     </article>`;
   }).join('');
 }
@@ -2858,7 +2967,8 @@ async function runUsedCheck() {
   const odoEcu = ecus.find(e => e.odometer) || withKm[0];
   const ref = odoEcu ? odoEcu.km : null;
   const maxGap = withKm.length && ref != null ? Math.max(...withKm.map(e => e.km - ref)) : null;
-  const notReady = SIM_MONITORS.filter(m => !m.ready);
+  const mons = simMode ? SIM_MONITORS : (_monitors || await api('/diagnostics/monitors').then(r => (_monitors = r.monitors)).catch(() => []));
+  const notReady = mons.filter(m => !m.ready);
   const checks = [];
   if (ref == null) checks.push({ lvl: 'warn', t: 'Kilométrage non lisible', s: "Aucun calculateur n'a renvoyé de kilométrage.", v: '—' });
   else if (maxGap > 500) checks.push({ lvl: 'crit', t: 'Écart de kilométrage', s: `Un calculateur a mémorisé ${fmtKm(maxGap)} de plus que le compteur : signe possible d'un compteur reculé.`, v: '+' + fmtKm(maxGap) });
@@ -2869,9 +2979,9 @@ async function runUsedCheck() {
   if (obd.distMil != null) checks.push(obd.distMil > 0
     ? { lvl: 'warn', t: 'Voyant moteur allumé', s: `Parcouru ${fmtKm(obd.distMil)} avec le voyant allumé. PID 21.`, v: fmtKm(obd.distMil) }
     : { lvl: 'ok', t: 'Voyant moteur éteint', s: 'Aucune distance parcourue voyant allumé. PID 21.', v: '0 km' });
-  checks.push(notReady.length
-    ? { lvl: 'warn', t: `${notReady.length} moniteurs non prêts`, s: `${notReady.map(m => m.name).join(', ')}. Normal après un effacement, mais à surveiller avant un achat.`, v: `${SIM_MONITORS.length - notReady.length}/${SIM_MONITORS.length}` }
-    : { lvl: 'ok', t: 'Moniteurs prêts', s: 'Tous les moniteurs ont terminé leurs tests.', v: `${SIM_MONITORS.length}/${SIM_MONITORS.length}` });
+  if (mons.length) checks.push(notReady.length
+    ? { lvl: 'warn', t: `${notReady.length} moniteurs non prêts`, s: `${notReady.map(m => m.name).join(', ')}. Normal après un effacement, mais à surveiller avant un achat.`, v: `${mons.length - notReady.length}/${mons.length}` }
+    : { lvl: 'ok', t: 'Moniteurs prêts', s: 'Tous les moniteurs ont terminé leurs tests.', v: `${mons.length}/${mons.length}` });
   checks.push(dtcs.length
     ? { lvl: 'warn', t: `${dtcs.length} code${dtcs.length > 1 ? 's' : ''} défaut mémorisé${dtcs.length > 1 ? 's' : ''}`, s: dtcs.map(d => d.code).join(', ') + '. Faites chiffrer les réparations avant d\'acheter.', v: dtcs.length }
     : { lvl: 'ok', t: 'Aucun code défaut', s: 'Les calculateurs ne signalent aucun défaut.', v: 0 });
@@ -2892,15 +3002,17 @@ async function runUsedCheck() {
 
 // ── Données live : grille personnalisable, HUD, chrono ────────────────
 const LIVE_DEFAULT = ['0C', '0D', '05', '10', '11', '04'];
-const PID_MAX = { '0C': 7000, '0D': 220, '05': 130, '0F': 80, '11': 100, '04': 100, '42': 16, '5C': 150, '62': 250, '2F': 100, '0E': 64, '06': 25, '33': 110, '10': 50 };
+const PID_MAX = { '0C': 7000, '0D': 220, '05': 130, '0F': 80, '11': 100, '04': 100, '42': 16, '5C': 150, '0B': 255, '2F': 100, '0E': 64, '06': 25, '33': 110, '10': 50 };
 let _livePids = LIVE_DEFAULT.slice();
 try { const s = JSON.parse(localStorage.getItem('autoryx_pids') || 'null'); if (Array.isArray(s) && s.length) _livePids = s; } catch {}
+const pidMissing = pid => bleMode && Array.isArray(_supported) && _supported.length > 0 && !_supported.includes(pid) && pid !== '42';
 const fmtPid = p => { if (!p) return '—'; const d = ['V', 'g/s', 'kPa'].includes(p.unit) ? 1 : 0; return fr(p.value, d); };
 function buildLiveGrid() {
   const cat = SIM.live();
   document.getElementById('liveParamGrid').innerHTML = _livePids.map((pid, i) => {
     const c = cat.find(x => x.pid === pid); if (!c) return '';
     const p = _liveMap[pid];
+    if (pidMissing(pid)) return `<div class="pcard ${i === 0 ? 'onyx' : ''} missing"><div class="label">${esc(c.name)}</div><div class="pval"><span class="pval-none">Non fourni par ce véhicule</span></div><div class="pbar"><div class="pbar-fill" style="width:0%"></div></div></div>`;
     return `<div class="pcard ${i === 0 ? 'onyx' : ''}"><div class="label">${esc(c.name)}</div><div class="pval"><span id="lv_${pid}">${p ? fmtPid(p) : '—'}</span><span class="pval-unit">${esc(c.unit)}</span></div><div class="pbar"><div class="pbar-fill" id="lb_${pid}" style="width:0%"></div></div></div>`;
   }).join('');
   renderPidChips();
@@ -2918,8 +3030,8 @@ function renderPidChips() {
   const cat = SIM.live();
   document.getElementById('pidCount').textContent = `${_livePids.length} sur 9 maximum`;
   document.getElementById('pidChips').innerHTML = cat.map(c => {
-    const on = _livePids.includes(c.pid);
-    return `<button aria-pressed="${on}" onclick="togglePid('${c.pid}')" ${!on && _livePids.length >= 9 ? 'disabled' : ''}>${esc(c.name)}</button>`;
+    const on = _livePids.includes(c.pid), miss = pidMissing(c.pid);
+    return `<button aria-pressed="${on}" onclick="togglePid('${c.pid}')" ${(!on && _livePids.length >= 9) || (miss && !on) ? 'disabled' : ''}${miss ? ' class="miss" title="Non fourni par ce véhicule"' : ''}>${esc(c.name)}${miss ? ' · non fourni' : ''}</button>`;
   }).join('');
 }
 function togglePidPicker() {

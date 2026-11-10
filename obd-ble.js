@@ -88,9 +88,141 @@ const ObdBle = (() => {
 
   function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
 
+  function udsPos(raw, sid) {
+    const b = hexBytes(raw);
+    for (let i = 0; i < b.length; i++) {
+      if (b[i] === 0x7F && b[i + 1] === sid) return null;
+      if (b[i] === ((sid + 0x40) & 0xFF)) return b.slice(i + 1);
+    }
+    return null;
+  }
+  function asciiRuns(bytes) {
+    const runs = []; let cur = '';
+    for (const c of bytes) {
+      if (c >= 0x20 && c < 0x7F) cur += String.fromCharCode(c);
+      else { if (cur.trim().length >= 3) runs.push(cur.trim()); cur = ''; }
+    }
+    if (cur.trim().length >= 3) runs.push(cur.trim());
+    return runs;
+  }
+  const dtc2 = (hi, lo) => DTC_LETTER[hi >> 6] + ((hi >> 4) & 3) + (hi & 15).toString(16).toUpperCase() + lo.toString(16).toUpperCase().padStart(2, '0');
+  const ECUS = typeof RENAULT_ECUS !== 'undefined' ? RENAULT_ECUS : (typeof require === 'function' ? (() => { try { return require('./renault-ecus.js'); } catch { return []; } })() : []);
+  const QUICK_TX = ['7E0', '7E1', '740', '752', '745', '743', '744', '742', '74D', '74E', '758', '755', '74C', '712', '751', '750', '75C'];
+
   function createEngine(send, wanted = () => Object.keys(PIDS)) {
     let supported = null;
     let liveBusy = null;
+    let lastScan = null;
+    let scanning = false;
+
+    async function monitors() {
+      const d = pidData(await send('0101'), 0x01);
+      if (!d || d.length < 4) throw httpError(404, 'Ce véhicule ne renvoie pas l\'état des moniteurs (PID 01 01).');
+      const [A, B, C, D] = d;
+      const compression = !!(B & 0x08);
+      const list = [['Ratés d\'allumage', B, 0, B, 4], ['Système carburant', B, 1, B, 5], ['Composants (CCM)', B, 2, B, 6]];
+      const names = compression
+        ? ['Catalyseur NMHC', 'Réduction NOx / SCR', null, 'Pression de suralimentation', null, 'Sonde gaz d\'échappement', 'Filtre à particules', 'EGR / VVT']
+        : ['Catalyseur', 'Catalyseur chauffé', 'Système EVAP', 'Air secondaire', null, 'Sonde O2', 'Chauffage sonde O2', 'Système EGR'];
+      names.forEach((n, k) => { if (n) list.push([n, C, k, D, k]); });
+      return {
+        mil: !!(A & 0x80), dtc_count: A & 0x7F, ignition: compression ? 'diesel' : 'essence',
+        monitors: list.filter(([, sv, sb]) => sv & (1 << sb)).map(([name, , , iv, ib]) => ({ name, ready: !(iv & (1 << ib)) })),
+      };
+    }
+    async function freeze() {
+      const b = hexBytes(await send('0202'));
+      let i = 0; while (i < b.length - 1 && !(b[i] === 0x42 && b[i + 1] === 0x02)) i++;
+      const raw = b.slice(i + 2);
+      const hasFrame = raw.length >= 3;
+      const dtcBytes = hasFrame ? raw.slice(1, 3) : raw.slice(0, 2);
+      if (i >= b.length - 1 || dtcBytes.length < 2 || (!dtcBytes[0] && !dtcBytes[1])) return { dtc: null, values: [] };
+      const values = [];
+      for (const pid of ['0C', '0D', '05', '04', '06', '07', '0F', '0B', '11', '42']) {
+        if (!PIDS[pid] && pid !== '07') continue;
+        const r = hexBytes(await send('02' + pid + '00'));
+        for (let j = 0; j < r.length - 2; j++) {
+          if (r[j] === 0x42 && r[j + 1] === parseInt(pid, 16)) {
+            const data = r.slice(j + 3);
+            const def = pid === '07' ? ['Corr. LT bank1', '%', x => (x[0] - 128) * 100 / 128] : PIDS[pid];
+            try { const v = def[2](data); if (Number.isFinite(v)) values.push({ pid, name: def[0], value: Math.round(v * 10) / 10, unit: def[1] }); } catch {}
+            break;
+          }
+        }
+      }
+      return { dtc: dtc2(dtcBytes[0], dtcBytes[1]), values };
+    }
+
+    async function scanEcu([code, name, desc, tx, rx]) {
+      await send('ATSH ' + tx); await send('ATFCSH ' + tx); await send('ATCRA ' + rx);
+      const probe = await send('3E00', 1200).catch(() => '');
+      if (!hexBytes(probe).length) return null;
+      const ecu = { address: tx, rx, code, name, desc, reachable: true, part: null, sw: null, protocol: null, dtcs: [] };
+      const p = udsPos(await send('22F187', 2000).catch(() => ''), 0x22);
+      if (p) {
+        ecu.protocol = 'UDS';
+        ecu.part = asciiRuns(p.slice(2))[0] || null;
+        const s = udsPos(await send('22F195', 2000).catch(() => ''), 0x22);
+        ecu.sw = s ? asciiRuns(s.slice(2))[0] || null : null;
+      } else {
+        const k = udsPos(await send('2180', 2500).catch(() => ''), 0x21);
+        if (k) { ecu.protocol = 'KWP'; const runs = asciiRuns(k.slice(1)); ecu.part = runs[0] || null; ecu.sw = runs[1] || null; }
+      }
+      const u = udsPos(await send('1902AF', 3000).catch(() => ''), 0x19);
+      if (u) {
+        ecu.protocol = ecu.protocol || 'UDS';
+        for (let i = 2; i + 3 < u.length; i += 4) {
+          const [h, m, l, st] = u.slice(i, i + 4);
+          if (!h && !m && !l) continue;
+          ecu.dtcs.push({ code: dtc2(h, m), type: l.toString(16).toUpperCase().padStart(2, '0'), active: !!(st & 1) });
+        }
+      } else {
+        let k = udsPos(await send('17FF00', 3000).catch(() => ''), 0x17);
+        if (!k) { await send('10C0').catch(() => ''); k = udsPos(await send('17FF00', 3000).catch(() => ''), 0x17); }
+        if (k) {
+          ecu.protocol = ecu.protocol || 'KWP';
+          for (let i = 1; i + 2 < k.length && ecu.dtcs.length < k[0]; i += 3) {
+            const [h, l, st] = k.slice(i, i + 3);
+            if (!h && !l) continue;
+            ecu.dtcs.push({ code: dtc2(h, l), type: null, active: !!(st & 0x40) });
+          }
+        }
+      }
+      ecu.dtc_count = ecu.dtcs.length;
+      return ecu;
+    }
+    async function resetBus() {
+      for (const c of ['ATCRA', 'ATFCSM 0', 'ATSH 7DF']) await send(c).catch(() => '');
+    }
+    async function renaultScan(all, onProgress = () => {}) {
+      const list = all ? ECUS : ECUS.filter(e => QUICK_TX.includes(e[3]));
+      const found = [];
+      scanning = true;
+      if (liveBusy) await liveBusy.catch(() => {});
+      await send('ATFCSD 300000').catch(() => ''); await send('ATFCSM 1').catch(() => '');
+      try {
+        for (let i = 0; i < list.length; i++) {
+          onProgress({ index: i, total: list.length, current: list[i], found });
+          const e = await scanEcu(list[i]).catch(() => null);
+          if (e) { found.push(e); onProgress({ index: i, total: list.length, current: list[i], found, hit: e }); }
+        }
+      } finally { await resetBus(); scanning = false; }
+      lastScan = { t: Date.now(), all, ecus: found };
+      return lastScan;
+    }
+    async function clearEcu(tx) {
+      const e = ECUS.find(r => r[3] === tx);
+      if (!e) throw httpError(404, 'Calculateur inconnu');
+      await send('ATSH ' + e[3]); await send('ATFCSH ' + e[3]); await send('ATCRA ' + e[4]);
+      await send('ATFCSD 300000').catch(() => ''); await send('ATFCSM 1').catch(() => '');
+      try {
+        if (udsPos(await send('14FFFFFF', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'UDS' };
+        if (udsPos(await send('14FF00', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'KWP' };
+        await send('10C0').catch(() => '');
+        if (udsPos(await send('14FF00', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'KWP' };
+        throw httpError(502, 'Le calculateur a refusé l\'effacement (conditions non remplies ou défaut toujours présent).');
+      } finally { await resetBus(); }
+    }
     async function supportedPids() {
       if (supported) return supported;
       supported = new Set();
@@ -111,6 +243,7 @@ const ObdBle = (() => {
       catch { return null; }
     }
     async function live(pids) {
+      if (scanning) return [];
       if (liveBusy) return liveBusy;
       liveBusy = (async () => {
         const sup = await supportedPids();
@@ -136,10 +269,13 @@ const ObdBle = (() => {
       try { return await send(cmd); } finally { await send('ATH0'); }
     }
 
-    return async function handle(path, opts = {}) {
+    async function handle(path, opts = {}) {
       const method = (opts.method || 'GET').toUpperCase();
       const route = path.split('?')[0];
       if (route === '/live/parameters') return live(wanted());
+      if (route === '/live/supported') return [...(await supportedPids())].filter(p => PIDS[p]);
+      if (route === '/diagnostics/monitors') return monitors();
+      if (route === '/diagnostics/freeze') return freeze();
       if (route === '/diagnostics/dtc' && method === 'DELETE') { await send('04'); return { status: 'cleared' }; }
       if (route === '/diagnostics/dtc') {
         const stored = parseDtcs(await send('03'), 0x43), pending = parseDtcs(await send('07'), 0x47), perm = parseDtcs(await send('0A'), 0x4A);
@@ -147,14 +283,23 @@ const ObdBle = (() => {
           ...perm.map(code => ({ code, severity: 'active' })),
           ...pending.filter(c => !perm.includes(c)).map(code => ({ code, severity: 'pending' })),
           ...stored.filter(c => !perm.includes(c) && !pending.includes(c)).map(code => ({ code, severity: 'stored' })),
-        ].map(c => ({ ...c, description: '', ecu_name: '' }));
-        return { codes, total_active: perm.length, total_pending: pending.length, total_stored: stored.length };
+        ].map(c => ({ ...c, description: '', ecu_name: 'Injection moteur (OBD)', ecu: '7E0' }));
+        for (const e of (lastScan ? lastScan.ecus : [])) {
+          for (const d of e.dtcs) {
+            if (codes.some(c => c.code === d.code && c.ecu === e.address)) continue;
+            codes.push({ code: d.code, severity: d.active ? 'active' : 'stored', ecu_name: e.name, ecu: e.address, description: d.type ? `Type de défaut ${d.type}` : '' });
+          }
+        }
+        return { codes, total_active: codes.filter(c => c.severity === 'active').length, total_pending: pending.length, total_stored: stored.length };
       }
       if (route === '/vehicle/vin') {
         let vin = parseVin(await send('0902', 6000)), source = 'OBD mode 09';
         if (!vin) { vin = parseVin(await targeted('7E0', '22F190')); source = 'UDS 22 F190'; }
         if (!vin) throw httpError(404, 'VIN non lisible sur ce véhicule');
         return { vin, source };
+      }
+      if (route === '/ecu/list' && lastScan) {
+        return lastScan.ecus.map(e => ({ address: e.address, name: e.name, reachable: true, dtc_count: e.dtc_count, part: e.part, sw: e.sw, protocol: e.protocol, rx: e.rx }));
       }
       if (route === '/ecu/list') {
         const responders = Object.keys(byHeader(await withHeaders('0100'))).sort();
@@ -184,18 +329,29 @@ const ObdBle = (() => {
           notes: ecus.length ? [] : ["Aucun calculateur ne fournit le kilométrage OBD standard (PID A6, surtout sur véhicules récents). Saisissez le kilométrage du compteur pour comparer."] };
       }
       if (route.startsWith('/actuators') || route.startsWith('/coding') || route === '/services/run') {
-        throw httpError(501, "Pas encore disponible en Bluetooth direct : les commandes constructeur de ce véhicule ne sont pas vérifiées. Lecture seule pour l'instant.");
+        throw httpError(501, "Bloqué par sécurité : les tests actifs, procédures et codages Renault demandent la base de commandes constructeur (DDT, fichier ecu.zip), absente d'AUTORYX. Sans elle, une commande approximative pourrait dérégler un calculateur. Lecture, scan et effacement des codes restent disponibles.");
+      }
+      if (route === '/ecu/scan') return renaultScan(!!(opts.all), opts.onProgress);
+      if (route === '/ecu/clear') {
+        const r = await clearEcu(opts.address);
+        if (lastScan) { const e = lastScan.ecus.find(x => x.address === opts.address); if (e) { e.dtcs = []; e.dtc_count = 0; } }
+        return r;
       }
       if (route === '/connection/status') return { connected: true };
       throw httpError(404, 'Fonction non disponible en Bluetooth direct');
-    };
+    }
+    handle.reset = () => { supported = null; lastScan = null; liveBusy = null; scanning = false; };
+    handle.lastScan = () => lastScan;
+    handle.ecuCount = () => ECUS.length;
+    handle.quickCount = () => ECUS.filter(e => QUICK_TX.includes(e[3])).length;
+    return handle;
   }
 
   // ── Web Bluetooth transport ─────────────────────────────────────────
   const full = short => `0000${short}-0000-1000-8000-00805f9b34fb`;
   const SERVICES = [full('fff0'), full('ffe0'), full('18f0'), full('ae30'), 'e7810a71-73ae-499d-8c15-faa9aef0c3f2'];
   const NAME_PREFIXES = ['OBD', 'obd', 'V-LINK', 'Vlink', 'IOS', 'iOS', 'ELM', 'Vgate', 'VEEPEAK', 'Android', 'KONNWEI', 'BLE'];
-  const link = { device: null, rx: null, tx: null, buf: '', pending: null, chain: Promise.resolve(), onLost: null, log: [] };
+  const link = { device: null, rx: null, tx: null, buf: '', pending: null, chain: Promise.resolve(), onLost: null, log: [], gen: 0 };
 
   function onData(e) {
     link.buf += new TextDecoder().decode(e.target.value);
@@ -204,6 +360,8 @@ const ObdBle = (() => {
       const text = link.buf.slice(0, k);
       link.buf = link.buf.slice(k + 1);
       const p = link.pending; link.pending = null; p.resolve(text);
+    } else if (k >= 0) {
+      link.buf = link.buf.slice(k + 1);
     }
   }
   async function writeRaw(text) {
@@ -215,12 +373,13 @@ const ObdBle = (() => {
     }
   }
   function send(cmd, timeout = 4000) {
+    const gen = link.gen;
     const run = async () => {
-      if (!link.tx) throw httpError(409, 'Boîtier non connecté');
+      if (gen !== link.gen || !link.tx) throw httpError(409, 'Boîtier non connecté');
       link.buf = '';
       const answer = new Promise((resolve, reject) => {
         const t = setTimeout(() => { link.pending = null; reject(httpError(504, `Pas de réponse du boîtier à ${cmd}`)); }, timeout);
-        link.pending = { resolve: v => { clearTimeout(t); resolve(v); } };
+        link.pending = { resolve: v => { clearTimeout(t); resolve(v); }, reject: e => { clearTimeout(t); reject(e); } };
       });
       await writeRaw(cmd + '\r');
       const raw = (await answer).replace(new RegExp('^\\s*' + cmd.replace(/\s/g, '\\s*') + '\\s*', 'i'), '').trim();
@@ -269,9 +428,11 @@ const ObdBle = (() => {
     if (!rx || !tx) { gatt.disconnect(); throw new Error("Ce boîtier n'expose pas de canal série Bluetooth reconnu (voir le journal)."); }
     note(`Canal série : réception ${rx.uuid}, envoi ${tx.uuid}`);
     await rx.startNotifications();
+    try { rx.removeEventListener('characteristicvaluechanged', onData); } catch {}
     rx.addEventListener('characteristicvaluechanged', onData);
-    device.addEventListener('gattserverdisconnected', () => { link.tx = null; link.rx = null; if (link.onLost) link.onLost(); });
-    Object.assign(link, { device, rx, tx, buf: '', pending: null, chain: Promise.resolve() });
+    const myGen = ++link.gen;
+    device.addEventListener('gattserverdisconnected', () => { if (myGen !== link.gen) return; drop(); if (link.onLost) link.onLost(); });
+    Object.assign(link, { device, rx, tx, buf: '', pending: null });
     onStep("Initialisation de l'ELM327");
     const version = await send('ATZ', 5000).catch(() => '');
     for (const c of ['ATE0', 'ATL0', 'ATS1', 'ATH0', 'ATAT1', 'ATSP0']) await send(c).catch(() => {});
@@ -280,7 +441,18 @@ const ObdBle = (() => {
     const proto = await send('ATDP').catch(() => '');
     return { name: device.name || 'ELM327', version: version.replace(/\s+/g, ' ').trim(), protocol: proto };
   }
-  function disconnect() { try { link.device && link.device.gatt.connected && link.device.gatt.disconnect(); } catch {} link.tx = null; link.rx = null; }
+  // Ends the session: queued commands of the old session fail at once instead of reaching the next one.
+  function drop() {
+    link.gen++;
+    if (link.pending) { const p = link.pending; link.pending = null; p.reject && p.reject(httpError(409, 'Connexion fermée')); }
+    try { link.rx && link.rx.removeEventListener('characteristicvaluechanged', onData); } catch {}
+    link.tx = null; link.rx = null; link.buf = '';
+  }
+  function disconnect() {
+    const dev = link.device;
+    drop();
+    try { dev && dev.gatt.connected && dev.gatt.disconnect(); } catch {}
+  }
 
   return { connect, disconnect, send, link, note, createEngine, hexBytes, pidData, byHeader, parseVin, parseDtcs, PIDS };
 })();
