@@ -1,0 +1,12 @@
+{
+  "name": "AUTORYX",
+  "short_name": "AUTORYX",
+  "description": "Diagnostic automobile OBD : ELM327 Bluetooth, Wi-Fi ou USB",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#E8EBF0",
+  "theme_color": "#E8EBF0",
+  "orientation": "portrait-primary",
+  "categories": ["utilities", "tools"],
+  "lang": "fr"
+}
