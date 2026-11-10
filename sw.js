@@ -1,6 +1,6 @@
 // AUTORYX service worker: network first so every deploy reaches the phone, cache only as offline fallback.
-const CACHE = 'autoryx-v4';
-const ASSETS = ['./', './index.html', './obd-ble.js', './renault-ecus.js', './manifest.json', './assets/car-top.png'];
+const CACHE = 'autoryx-v5';
+const ASSETS = ['./', './index.html', './obd-ble.js', './renault-ecus.js', './ddt.js', './ddt-ui.js', './manifest.json', './assets/car-top.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).catch(() => {}));

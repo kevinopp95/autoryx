@@ -86,6 +86,7 @@ const ObdBle = (() => {
   };
   const OBD_NAMES = { '7E8': 'ECU Moteur', '7E9': 'BVA / Boîte auto' };
 
+  const NRC = { 0x11: 'service non supporté', 0x12: 'fonction non supportée', 0x13: 'longueur incorrecte', 0x22: 'conditions non remplies', 0x31: 'valeur hors plage', 0x33: 'accès sécurisé requis', 0x78: 'en cours' };
   function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
 
   function udsPos(raw, sid) {
@@ -105,8 +106,34 @@ const ObdBle = (() => {
     if (cur.trim().length >= 3) runs.push(cur.trim());
     return runs;
   }
+  const hx = a => a.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join('');
   const dtc2 = (hi, lo) => DTC_LETTER[hi >> 6] + ((hi >> 4) & 3) + (hi & 15).toString(16).toUpperCase() + lo.toString(16).toUpperCase().padStart(2, '0');
   const ECUS = typeof RENAULT_ECUS !== 'undefined' ? RENAULT_ECUS : (typeof require === 'function' ? (() => { try { return require('./renault-ecus.js'); } catch { return []; } })() : []);
+  const UCH = { tx: '745', rx: '765', kind: 'kwp' }, TDB = { tx: '743', rx: '763', kind: 'uds', post: '1103' };
+  const UPC = { tx: '74D', rx: '76D', kind: 'uds' }, EPB = { tx: '755', rx: '775', kind: 'uds' }, CLIM = { tx: '744', rx: '764', kind: 'kwp' };
+  const byte = (on, off, test) => ({ len: 1, on: () => [on], off: off == null ? null : () => [off], isOn: c => (test ? test(c[0]) : c[0] === on) });
+  const SETTINGS = [
+    { id: 'tpms', group: 'Sécurité', title: 'Surveillance pression des pneus', desc: 'Alerte de sous-gonflage au tableau de bord. À désactiver seulement si la voiture n\'a pas de capteurs dans les roues.',
+      parts: [{ ...UCH, ident: '24', ...byte(0x80, 0x00, v => !!(v & 0x80)) }, { ...TDB, ident: '010E', ...byte(0x10, 0x00, v => !!(v & 0x10)) }] },
+    { id: 'washer', group: 'Éclairage', title: 'Lave-phares', desc: 'Les lave-phares fonctionnent avec le lave-glace, feux allumés.',
+      parts: [{ ...UCH, ident: '52', ...byte(0x01, 0x00) }] },
+    { id: 'epb_auto', group: 'Conduite', title: 'Serrage auto du frein de parking', desc: 'Le frein de parking se serre seul à l\'arrêt du moteur. Le type de boîte enregistré n\'est pas modifié.',
+      parts: [{ ...EPB, ident: '0217', len: 2, on: c => [0x00, c[1]], off: c => [0x01, c[1]], isOn: c => c[0] === 0x00 }] },
+    { id: 'ss_off', group: 'Conduite', title: 'Start & Stop coupé par défaut', desc: 'Le moteur ne se coupe plus aux arrêts.',
+      parts: [{ ...UPC, ident: '0752', ...byte(0x01, 0x00) }] },
+    { id: 'ss_hide', group: 'Conduite', title: 'Masquer l\'alerte Start & Stop', desc: 'Cache le message « Start & Stop indisponible ».',
+      parts: [{ ...UPC, ident: '0763', ...byte(0x00, 0x01) }] },
+    { id: 'clock', group: 'Tableau de bord', title: 'Horloge 24 h au tableau de bord', desc: 'Affiche l\'heure au format 24 h. Le tableau de bord redémarre une seconde après l\'écriture.',
+      parts: [{ ...TDB, ident: '0121', ...byte(0x20, 0x00) }] },
+    { id: 'ext_temp', group: 'Tableau de bord', title: 'Température extérieure', desc: 'Affiche la température extérieure. Le tableau de bord redémarre une seconde après l\'écriture.',
+      parts: [{ ...TDB, ident: '0122', ...byte(0x10, null) }] },
+    { id: 'air_quality', group: 'Climatisation', title: 'Gestion qualité de l\'air désactivée', desc: 'Pour une clim sans capteur de pollution : supprime les recyclages automatiques.',
+      parts: [{ ...CLIM, ident: '0B', ...byte(0x01, null) }, { ...CLIM, ident: '12', ...byte(0x01, null) }] },
+    { id: 'ptc', group: 'Climatisation', title: 'Chauffage électrique additionnel', desc: 'Lecture seule : configuration enregistrée dans la climatisation.', readOnly: true,
+      parts: [{ ...CLIM, ident: '04' }],
+      decode: ([d]) => ({ 0x00: 'Non configuré', 0x01: 'Sans chauffage additionnel', 0x10: 'Chauffage 1 kW', 0x16: 'Chauffage 1,6 kW', 0x18: 'Chauffage 1,8 kW' })[d[0]] || `Valeur ${hx2(d[0])} non répertoriée` },
+  ];
+  const hx2 = b => (b ?? 0).toString(16).toUpperCase().padStart(2, '0');
   const QUICK_TX = ['7E0', '7E1', '740', '752', '745', '743', '744', '742', '74D', '74E', '758', '755', '74C', '712', '751', '750', '75C'];
 
   function createEngine(send, wanted = () => Object.keys(PIDS)) {
@@ -163,10 +190,12 @@ const ObdBle = (() => {
         ecu.protocol = 'UDS';
         ecu.part = asciiRuns(p.slice(2))[0] || null;
         const s = udsPos(await send('22F195', 2000).catch(() => ''), 0x22);
+        const did = async c => { const r = udsPos(await send(c, 2000).catch(() => ''), 0x22); return r ? hx(r.slice(2)) : ''; };
+        ecu.identRaw = { f1a0: await did('22F1A0'), f18a: await did('22F18A'), f194: await did('22F194'), f195: s ? hx(s.slice(2)) : '' };
         ecu.sw = s ? asciiRuns(s.slice(2))[0] || null : null;
       } else {
         const k = udsPos(await send('2180', 2500).catch(() => ''), 0x21);
-        if (k) { ecu.protocol = 'KWP'; const runs = asciiRuns(k.slice(1)); ecu.part = runs[0] || null; ecu.sw = runs[1] || null; }
+        if (k) { ecu.protocol = 'KWP'; ecu.identRaw = { kwp: '61' + hx(k) }; const runs = asciiRuns(k.slice(1)); ecu.part = runs[0] || null; ecu.sw = runs[1] || null; }
       }
       const u = udsPos(await send('1902AF', 3000).catch(() => ''), 0x19);
       if (u) {
@@ -223,6 +252,135 @@ const ObdBle = (() => {
         throw httpError(502, 'Le calculateur a refusé l\'effacement (conditions non remplies ou défaut toujours présent).');
       } finally { await resetBus(); }
     }
+    // ── Mégane III / Scénic III settings (X95, from the DDT4all community macros) ──
+    // Every write: vehicle stopped, fresh read, value must match the backup the app saved, exact record length,
+    // write, read back. Anything unexpected stops before writing.
+    async function talk(tx, rx) {
+      await send('ATSH ' + tx); await send('ATFCSH ' + tx); await send('ATCRA ' + rx);
+      await send('ATFCSD 300000').catch(() => ''); await send('ATFCSM 1').catch(() => '');
+    }
+    async function openSession() {
+      if (!udsPos(await send('10C0', 3000).catch(() => ''), 0x10)) throw httpError(502, 'Le calculateur refuse la session de diagnostic (contact mis ?).');
+    }
+    async function readPart(part) {
+      const kwp = part.kind === 'kwp';
+      const raw = await send((kwp ? '21' : '22') + part.ident, 3000).catch(() => '');
+      const r = udsPos(raw, kwp ? 0x21 : 0x22);
+      const idLen = part.ident.length / 2;
+      if (!r || hx(r.slice(0, idLen)) !== part.ident) throw httpError(502, `Lecture impossible (${kwp ? '21' : '22'}${part.ident}) : ce réglage n'existe pas sur ce calculateur.`);
+      const data = r.slice(idLen);
+      if (part.len && data.length !== part.len) throw httpError(409, `Format inattendu pour ${part.ident} (${data.length} octet(s) au lieu de ${part.len}) : écriture bloquée.`);
+      return data;
+    }
+    async function writePart(part, data) {
+      const kwp = part.kind === 'kwp';
+      const r = udsPos(await send((kwp ? '3B' : '2E') + part.ident + hx(data), 4000).catch(() => ''), kwp ? 0x3B : 0x2E);
+      if (!r) throw httpError(502, 'Le calculateur a refusé l\'écriture. Rien n\'a été modifié.');
+    }
+    async function vehicleStopped() {
+      const d = pidData(await send('010D').catch(() => ''), 0x0D);
+      if (d && d[0] > 0) throw httpError(409, 'Véhicule en mouvement : arrêtez-vous, moteur coupé, contact mis.');
+    }
+    function findSetting(id) {
+      const s = SETTINGS.find(x => x.id === id);
+      if (!s) throw httpError(404, 'Réglage inconnu');
+      return s;
+    }
+    async function settingRead(id) {
+      const s = findSetting(id);
+      scanning = true; if (liveBusy) await liveBusy.catch(() => {});
+      try {
+        const parts = [];
+        for (const p of s.parts) {
+          await talk(p.tx, p.rx); await openSession();
+          parts.push(hx(await readPart(p)));
+          await resetBus();
+        }
+        const bytes = parts.map(h => hexBytes(h));
+        return { id, parts, on: s.readOnly ? null : s.parts.every((p, k) => p.isOn(bytes[k])), info: s.decode ? s.decode(bytes) : null };
+      } finally { await resetBus(); scanning = false; }
+    }
+    async function settingWrite(id, target, expect, restoreTo = null) {
+      const s = findSetting(id);
+      if (s.readOnly) throw httpError(400, 'Réglage en lecture seule');
+      if (!Array.isArray(expect) || expect.length !== s.parts.length) throw httpError(400, 'Sauvegarde manquante : relisez le réglage avant de le modifier.');
+      scanning = true; if (liveBusy) await liveBusy.catch(() => {});
+      const done = [];
+      try {
+        await vehicleStopped();
+        for (let k = 0; k < s.parts.length; k++) {
+          const p = s.parts[k];
+          await talk(p.tx, p.rx); await openSession();
+          const cur = await readPart(p);
+          if (target !== 'restore' && hx(cur) !== expect[k]) throw httpError(409, 'La valeur a changé depuis la lecture : relisez le réglage.');
+          const want = target === 'restore' ? hexBytes(restoreTo[k] || '') : target === 'on' ? p.on(cur) : p.off ? p.off(cur) : null;
+          if (!want || want.length !== cur.length) throw httpError(400, target === 'off' && !p.off ? 'Pas de valeur « désactivé » connue : utilisez « Restaurer l\'origine ».' : 'Valeur cible invalide.');
+          if (hx(want) !== hx(cur)) {
+            await writePart(p, want);
+            const back = await readPart(p);
+            if (hx(back) !== hx(want)) throw httpError(502, `Écrit mais la relecture diffère (${hx(back)} au lieu de ${hx(want)}).`);
+            if (p.post) await send(p.post, 3000).catch(() => '');
+          }
+          done.push({ ident: p.ident, before: hx(cur), after: hx(want) });
+          await resetBus();
+        }
+        return { id, verified: true, done };
+      } finally { await resetBus(); scanning = false; }
+    }
+    async function settingRestore(id, backup) {
+      const s = findSetting(id);
+      if (!Array.isArray(backup) || backup.length !== s.parts.length) throw httpError(400, 'Aucune sauvegarde pour ce réglage.');
+      return settingWrite(id, 'restore', backup, backup);
+    }
+
+    // ── Requests from the vehicle pack (DDT). The engine keeps its own guard list, whatever the screen asks. ──
+    const NO_WRITE = ['7E0', '740', '752', '7E1', '742', '7E2'];   // engine, ABS, airbag, gearboxes, power steering
+    const NO_TEST = ['752', '740'];                                  // airbag (pyrotechnics), ABS
+    const ALLOWED = { read: ['21', '22'], write: ['3B', '2E'], test: ['30', '2F'] };
+    async function engineOff() {
+      await vehicleStopped();
+      const r = pidData(await send('010C').catch(() => ''), 0x0C);
+      if (r && r.length >= 2 && (r[0] * 256 + r[1]) / 4 > 200) throw httpError(409, 'Moteur tournant : coupez le moteur et laissez le contact mis.');
+    }
+    async function ddtSend({ tx, rx, bytes, kind, kwp }) {
+      const e = ECUS.find(r => r[3] === tx && r[4] === rx);
+      if (!e) throw httpError(404, 'Calculateur inconnu');
+      const sid = String(bytes || '').slice(0, 2).toUpperCase();
+      if (!/^[0-9A-F]+$/i.test(bytes || '') || bytes.length % 2 || !(ALLOWED[kind] || []).includes(sid)) throw httpError(400, `Commande ${sid} refusée par AUTORYX`);
+      if (kind === 'write' && NO_WRITE.includes(tx)) throw httpError(403, `Écriture bloquée sur « ${e[1]} » : calculateur de sécurité ou moteur.`);
+      if (kind === 'test' && NO_TEST.includes(tx)) throw httpError(403, `Tests bloqués sur « ${e[1]} ».`);
+      scanning = true; if (liveBusy) await liveBusy.catch(() => {});
+      try {
+        if (kind !== 'read') await engineOff();
+        await talk(tx, rx);
+        const isKwp = kwp != null ? kwp : ['21', '3B', '30'].includes(sid);
+        let ok = udsPos(await send(isKwp ? '10C0' : '1003', 3000).catch(() => ''), 0x10);
+        if (!ok && !isKwp) ok = udsPos(await send('10C0', 3000).catch(() => ''), 0x10);
+        if (!ok && kind !== 'read') throw httpError(502, 'Le calculateur refuse la session de diagnostic.');
+        const raw = await send(bytes.toUpperCase(), 5000).catch(() => '');
+        let b = hexBytes(raw);
+        while (b[0] === 0x7F && b[2] === 0x78) b = b.slice(3);   // "response pending" frames
+        if (b[0] === 0x7F) throw httpError(502, `Refusé par le calculateur (code ${hx([b[2] || 0])}${NRC[b[2]] ? ' : ' + NRC[b[2]] : ''}).`);
+        if (!b.length) throw httpError(504, 'Pas de réponse du calculateur.');
+        if (kind === 'test') testOn = true;
+        return { bytes: hx(b) };
+      } finally {
+        // a running test keeps its header and session (and the live loop stays paused) until /ddt/stop
+        if (!testOn) { await resetBus(); scanning = false; }
+      }
+    }
+    let testOn = false;
+    async function ddtKeepAlive() { if (testOn) await send('3E00', 2000).catch(() => ''); return { running: testOn }; }
+    async function ddtStop({ tx, rx, bytes }) {
+      scanning = true; if (liveBusy) await liveBusy.catch(() => {});
+      try {
+        await talk(tx, rx);
+        if (bytes && /^(30|2F)/i.test(bytes)) await send(bytes.toUpperCase(), 3000).catch(() => '');
+        await send('1081', 3000).catch(() => '');   // back to the default session: the ECU takes its outputs back
+        return { stopped: true };
+      } finally { testOn = false; await resetBus(); scanning = false; }
+    }
+
     async function supportedPids() {
       if (supported) return supported;
       supported = new Set();
@@ -299,7 +457,7 @@ const ObdBle = (() => {
         return { vin, source };
       }
       if (route === '/ecu/list' && lastScan) {
-        return lastScan.ecus.map(e => ({ address: e.address, name: e.name, reachable: true, dtc_count: e.dtc_count, part: e.part, sw: e.sw, protocol: e.protocol, rx: e.rx }));
+        return lastScan.ecus.map(e => ({ address: e.address, name: e.name, reachable: true, dtc_count: e.dtc_count, part: e.part, sw: e.sw, protocol: e.protocol, rx: e.rx, code: e.code, identRaw: e.identRaw || null }));
       }
       if (route === '/ecu/list') {
         const responders = Object.keys(byHeader(await withHeaders('0100'))).sort();
@@ -337,10 +495,17 @@ const ObdBle = (() => {
         if (lastScan) { const e = lastScan.ecus.find(x => x.address === opts.address); if (e) { e.dtcs = []; e.dtc_count = 0; } }
         return r;
       }
+      if (route === '/renault/settings') return SETTINGS.map(x => ({ id: x.id, group: x.group, title: x.title, desc: x.desc, readOnly: !!x.readOnly, canOff: x.parts.every(p => p.off), ecus: [...new Set(x.parts.map(p => p.tx))] }));
+      if (route === '/renault/settings/read') return settingRead(opts.id);
+      if (route === '/renault/settings/write') return settingWrite(opts.id, opts.target, opts.expect);
+      if (route === '/renault/settings/restore') return settingRestore(opts.id, opts.backup);
+      if (route === '/ddt/send') return ddtSend(opts);
+      if (route === '/ddt/stop') return ddtStop(opts);
+      if (route === '/ddt/keepalive') return ddtKeepAlive();
       if (route === '/connection/status') return { connected: true };
       throw httpError(404, 'Fonction non disponible en Bluetooth direct');
     }
-    handle.reset = () => { supported = null; lastScan = null; liveBusy = null; scanning = false; };
+    handle.reset = () => { testOn = false; supported = null; lastScan = null; liveBusy = null; scanning = false; };
     handle.lastScan = () => lastScan;
     handle.ecuCount = () => ECUS.length;
     handle.quickCount = () => ECUS.filter(e => QUICK_TX.includes(e[3])).length;

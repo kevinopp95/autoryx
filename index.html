@@ -621,6 +621,14 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 .pid-chips button:disabled { opacity: .45; cursor: not-allowed; }
 .pid-chips button.miss { text-decoration: line-through; text-decoration-thickness: 1px; }
 .pcard.missing { opacity: .6; }
+.mg-item { flex-wrap: wrap; row-gap: 12px; }
+.ddt-req { display: grid; gap: 10px; }
+.ddt-req .panel-t { font-size: 15px; }
+.ddt-dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; margin: 0; font-size: 13.5px; }
+.ddt-dl dt { color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.ddt-dl dd { margin: 0; font-family: var(--f-mono); font-size: 13px; text-align: right; overflow-wrap: anywhere; max-width: 55vw; }
+.mg-item .coding-info { flex: 1 1 240px; min-width: 0; }
+.mg-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .pval-none { font: 500 14px/1.3 var(--f-ui); letter-spacing: 0; color: var(--ink-3); }
 .pcard.onyx .pval-none { color: var(--onyx-ink-2); }
 .offline-bar { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--r-md, 12px); background: var(--warn-soft); color: var(--warn); font-size: 13.5px; font-weight: 500; }
@@ -1029,6 +1037,12 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
       <div id="codingList"></div>
     </div>
 
+    <!-- Manufacturer ECU screen (vehicle pack) -->
+    <div class="screen" id="screen-ecu">
+      <header class="scr-head"><div><h1 class="scr-title" id="ecuTitle">Calculateur</h1><p class="scr-sub">Mesures, configuration et tests du constructeur, d'après la base importée.</p></div></header>
+      <div id="ecuBody"></div>
+    </div>
+
     <!-- Report -->
     <div class="screen" id="screen-report">
       <header class="scr-head"><div><h1 class="scr-title">Rapport de diagnostic</h1><p class="scr-sub">Synthèse imprimable des défauts et des mesures.</p></div></header>
@@ -1091,6 +1105,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
         </div>
       </header>
       <div class="stack">
+        <section class="panel" id="packPanel" hidden></section>
         <section class="panel" id="scanSummary" hidden></section>
         <section class="panel" id="prepostPanel" hidden></section>
         <section class="panel">
@@ -1348,6 +1363,7 @@ function showScreen(id, fromHistory) {
   toggleMore(false);
   hideTip();
   if (id !== 'actuators' && typeof _act !== 'undefined' && _act && _act.timer) stopActuator(true);
+  if (id !== 'ecu' && typeof DdtUi !== 'undefined') DdtUi.leave();
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.tabnav button').forEach(b => b.classList.remove('active'));
   document.getElementById('screen-' + id).classList.add('active');
@@ -1503,7 +1519,7 @@ function copyBleLog() {
 }
 window.addEventListener('error', e => ObdBle.note('Erreur page : ' + e.message));
 window.addEventListener('unhandledrejection', e => ObdBle.note('Erreur : ' + (e.reason && e.reason.message || e.reason)));
-ObdBle.note(`Page chargée · version 2026-11-10.4 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
+ObdBle.note(`Page chargée · version 2026-11-10.6 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
 if (!navigator.bluetooth) {
   const chip = document.getElementById('bleSupport');
   chip.textContent = 'Ouvrir dans Bluefy'; chip.className = 'chip push warn';
@@ -2473,6 +2489,14 @@ async function restoreCoding(brand) {
 
 function loadCodingOptions() {
   const brand = document.getElementById('codingBrand').value;
+  if (bleMode && brand === 'Renault' && !_mgShow) {
+    document.getElementById('codingList').innerHTML = `<section class="panel"><div class="panel-h"><span class="panel-t">Configuration Renault</span></div>
+      <p class="panel-sub" style="margin:0 0 14px">La configuration se fait calculateur par calculateur, d'après la base constructeur importée dans ce téléphone : lancez un scan complet puis touchez « Ouvrir » sur le calculateur voulu.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" onclick="showScreen('fullscan')">Aller au scan complet</button>
+      <button class="btn btn-soft" onclick="_mgShow=true;loadCodingOptions()">Réglages Mégane III / Scénic III</button></div></section>`;
+    return;
+  }
+  if (bleMode && brand === 'Renault') { loadMegane(); return; }
   const opts = CODING_OPTIONS[brand] || [];
   if (!_codingState[brand]) {
     _codingState[brand] = {};
@@ -2515,6 +2539,81 @@ function applyCoding(brand, id, val) {
     toast(`${opt.name} : ${val ? 'activé' : 'désactivé'} (démo)`);
   }
   loadCodingOptions();
+}
+
+// ── Réglages Mégane III / Scénic III (Bluetooth direct) ───────────────
+let _mgShow = false;
+let _mgList = null, _mgState = {}, _mgBusy = null, _mgArm = {};
+let _mgBackup = {}, _mgOk = false;
+try { _mgBackup = JSON.parse(localStorage.getItem('autoryx_mg_backup') || '{}') || {}; _mgOk = localStorage.getItem('autoryx_mg_ok') === '1'; } catch {}
+const saveMg = () => { try { localStorage.setItem('autoryx_mg_backup', JSON.stringify(_mgBackup)); } catch {} };
+function mgConfirmModel() { _mgOk = true; try { localStorage.setItem('autoryx_mg_ok', '1'); } catch {} loadMegane(); }
+async function loadMegane() {
+  const host = document.getElementById('codingList');
+  if (!_mgOk) {
+    host.innerHTML = `<section class="panel"><div class="panel-h"><span class="panel-t">Réglages Mégane III · Scénic III</span></div>
+      <p class="panel-sub" style="margin:0 0 14px">Ces réglages viennent des macros de la communauté DDT4all pour les Mégane III et Scénic III (2008 à 2016, code X95). Sur un autre modèle, les adresses ne correspondent pas : l'app bloquerait l'écriture, mais ne les utilisez pas.</p>
+      <button class="btn btn-primary" onclick="mgConfirmModel()">Ma voiture est une Mégane III ou un Scénic III</button></section>`;
+    return;
+  }
+  if (!_mgList) { try { _mgList = await api('/renault/settings'); } catch (e) { host.innerHTML = `<div class="panel empty">${esc(e.message)}</div>`; return; } }
+  renderMegane();
+}
+function renderMegane() {
+  const host = document.getElementById('codingList');
+  const groups = [...new Set(_mgList.map(s => s.group))];
+  host.innerHTML = `<section class="panel"><div class="panel-h"><span class="panel-t">Avant de modifier</span></div>
+    <p class="panel-sub" style="margin:0">Véhicule à l'arrêt, moteur coupé, contact mis. Chaque réglage est d'abord lu et sa valeur d'origine gardée dans ce téléphone. L'écriture est relue pour vérification, et « Restaurer l'origine » remet la valeur lue la première fois.</p></section>`
+    + groups.map(g => `<div class="panel-sub" style="margin:18px 4px 8px;font-weight:600">${esc(g)}</div>` + _mgList.filter(s => s.group === g).map(s => {
+      const st = _mgState[s.id], busy = _mgBusy === s.id, bk = _mgBackup[s.id];
+      const status = busy ? 'Communication avec le calculateur…' : st ? (s.readOnly ? esc(st.info) : st.on ? 'Activé' : 'Désactivé') + ` · valeur ${esc(st.parts.join(' / '))}` : 'Pas encore lu';
+      const acts = busy ? '' : !st ? `<button class="btn btn-soft sm" onclick="mgRead('${s.id}')">Lire</button>`
+        : s.readOnly ? `<button class="btn btn-soft sm" onclick="mgRead('${s.id}')">Relire</button>`
+        : `${st.on ? (s.canOff ? `<button class="btn btn-soft sm" onclick="mgWrite('${s.id}','off')">Désactiver</button>` : '') : `<button class="btn btn-primary sm" onclick="mgWrite('${s.id}','on')">Activer</button>`}
+           ${bk && bk.parts.join() !== st.parts.join() ? `<button class="btn btn-soft sm" onclick="mgRestore('${s.id}')">${svgI('undo')}Restaurer l'origine</button>` : ''}`;
+      return `<div class="coding-item mg-item" id="mg_${s.id}">
+        <div class="coding-info"><div class="coding-name">${esc(s.title)}</div><div class="coding-desc">${esc(s.desc)}</div>
+          <div style="font-family:var(--f-mono);font-size:12px;color:var(--ink-3);margin-top:6px">${status}${bk ? ` · origine ${esc(bk.parts.join(' / '))} (${esc(bk.t)})` : ''}</div></div>
+        <div class="mg-acts">${acts}</div></div>`;
+    }).join('')).join('');
+}
+async function mgRun(id, fn) {
+  if (_mgBusy) { toast('Une communication est déjà en cours'); return; }
+  _mgBusy = id; renderMegane();
+  try { await fn(); } catch (e) { toast(e.message, 7000); }
+  finally { _mgBusy = null; renderMegane(); }
+}
+function mgRead(id) {
+  return mgRun(id, async () => {
+    const r = await api('/renault/settings/read', { id });
+    _mgState[id] = r;
+    if (!_mgBackup[id] && !r.info) { _mgBackup[id] = { t: new Date().toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }), parts: r.parts }; saveMg(); }
+  });
+}
+function mgWrite(id, target) {
+  const s = _mgList.find(x => x.id === id), st = _mgState[id];
+  if (!st || !_mgBackup[id]) { toast('Lisez le réglage avant de le modifier'); return; }
+  if (!_mgArm[id] || Date.now() - _mgArm[id] > 5000) {
+    _mgArm[id] = Date.now();
+    toast(`Appuyez encore pour ${target === 'on' ? 'activer' : 'désactiver'} « ${s.title} ». Véhicule à l'arrêt, contact mis.`, 5000);
+    return;
+  }
+  delete _mgArm[id];
+  return mgRun(id, async () => {
+    await api('/renault/settings/write', { id, target, expect: st.parts });
+    _mgState[id] = await api('/renault/settings/read', { id });
+    toast(`${s.title} : ${target === 'on' ? 'activé' : 'désactivé'} et vérifié`);
+  });
+}
+function mgRestore(id) {
+  const s = _mgList.find(x => x.id === id);
+  if (!_mgArm['r' + id] || Date.now() - _mgArm['r' + id] > 5000) { _mgArm['r' + id] = Date.now(); toast(`Appuyez encore pour remettre « ${s.title} » à l'origine.`, 5000); return; }
+  delete _mgArm['r' + id];
+  return mgRun(id, async () => {
+    await api('/renault/settings/restore', { id, backup: _mgBackup[id].parts });
+    _mgState[id] = await api('/renault/settings/read', { id });
+    toast(`${s.title} : valeur d'origine restaurée`);
+  });
 }
 
 // ── Rapport ───────────────────────────────────────────────────────────
@@ -2719,13 +2818,14 @@ function renderModules(s) {
     const st = ecuState(e);
     const chip = { ok: ['ok', 'OK'], warn: ['warn', '1 défaut'], err: ['crit', e.dtc_count + ' défauts'], off: ['', 'Injoignable'] }[st];
     const codes = s.dtcs.filter(d => d.ecu === e.address);
+    const openBtn = bleMode && e.code ? `<button class="btn btn-dark sm" onclick="DdtUi.open('${esc(e.address)}')">Ouvrir ${svgI('chevron')}</button>` : '';
     const clr = bleMode && e.dtc_count && e.address !== '7E0' ? `<div class="mod-act"><button class="btn btn-soft sm" onclick="clearEcuDtc('${esc(e.address)}')">${svgI('x')}Effacer les codes</button></div>` : '';
     return `<article class="mod" id="mod_${e.address}">
       <div class="mod-h"><b>${esc(shortName(e.name))}</b><span class="mono">${esc(e.address)}</span><span class="chip ${chip[0]}">${chip[1]}</span></div>
       ${e.reachable ? `<dl><dt>Référence</dt><dd>${esc(e.part || '—')}</dd><dt>Logiciel</dt><dd>${esc(e.sw || '—')}</dd><dt>Matériel</dt><dd>${esc(e.hw || '—')}</dd><dt>Codage</dt><dd>${esc(e.coding || '—')}</dd>${e.km != null ? `<dt>Kilométrage</dt><dd>${fmtKm(e.km)}</dd>` : ''}</dl>`
         : `<p class="panel-sub" style="margin:0">Pas de réponse. Calculateur absent sur cette version ou non alimenté.</p>`}
       ${codes.length ? `<div class="codes">${codes.map(d => `<div><span class="code">${esc(d.code)}</span>${esc(d.description || '')}</div>`).join('')}</div>` : ''}
-      ${e.protocol ? `<p class="panel-sub" style="margin:0">Protocole ${esc(e.protocol)} · réponse ${esc(e.rx || '')}</p>` : ''}${clr}
+      ${e.protocol ? `<p class="panel-sub" style="margin:0">Protocole ${esc(e.protocol)} · réponse ${esc(e.rx || '')}</p>` : ''}${clr}${openBtn ? `<div class="mod-act">${openBtn}</div>` : ''}
     </article>`;
   }).join('');
 }
@@ -3164,5 +3264,8 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 </script>
+<script src="ddt.js"></script>
+<script src="ddt-ui.js"></script>
+<script>DdtUi.loadStored().then(() => DdtUi.renderPackPanel());</script>
 </body>
 </html>
