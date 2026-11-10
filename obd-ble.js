@@ -192,7 +192,9 @@ const ObdBle = (() => {
   }
 
   // ── Web Bluetooth transport ─────────────────────────────────────────
-  const SERVICES = [0xfff0, 0xffe0, 0x18f0, 0xae30, 'e7810a71-73ae-499d-8c15-faa9aef0c3f2'];
+  const full = short => `0000${short}-0000-1000-8000-00805f9b34fb`;
+  const SERVICES = [full('fff0'), full('ffe0'), full('18f0'), full('ae30'), 'e7810a71-73ae-499d-8c15-faa9aef0c3f2'];
+  const NAME_PREFIXES = ['OBD', 'obd', 'V-LINK', 'Vlink', 'IOS', 'iOS', 'ELM', 'Vgate', 'VEEPEAK', 'Android', 'KONNWEI', 'BLE'];
   const link = { device: null, rx: null, tx: null, buf: '', pending: null, chain: Promise.resolve(), onLost: null, log: [] };
 
   function onData(e) {
@@ -235,7 +237,21 @@ const ObdBle = (() => {
     if (!navigator.bluetooth) throw new Error("Bluetooth indisponible dans ce navigateur. Sur iPhone, ouvrez AUTORYX dans l'app Bluefy ; sur Android, dans Chrome.");
     try { note('Bluetooth disponible : ' + (navigator.bluetooth.getAvailability ? await navigator.bluetooth.getAvailability() : 'inconnu')); } catch (e) { note('getAvailability : ' + e.message); }
     step('Ouverture de la liste des appareils Bluetooth…');
-    const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
+    // Browsers differ on what they accept (Bluefy rejected short numeric UUIDs): try the widest request first, then narrower ones.
+    const attempts = [
+      { acceptAllDevices: true, optionalServices: SERVICES },
+      { filters: [...SERVICES.map(s => ({ services: [s] })), ...NAME_PREFIXES.map(p => ({ namePrefix: p }))], optionalServices: SERVICES },
+      { acceptAllDevices: true },
+    ];
+    let device = null;
+    for (let i = 0; i < attempts.length && !device; i++) {
+      try { device = await navigator.bluetooth.requestDevice(attempts[i]); }
+      catch (e) {
+        note(`Demande ${i + 1}/${attempts.length} refusée : ${e.name} ${e.message}`);
+        if (e.name === 'NotFoundError' && !/parse|invalid|type/i.test(e.message)) throw e;
+        if (i === attempts.length - 1) throw e;
+      }
+    }
     step('Appareil choisi : ' + (device.name || 'sans nom') + '. Connexion…');
     const gatt = await device.gatt.connect();
     step('Connecté au boîtier, recherche du canal série…');

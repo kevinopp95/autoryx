@@ -168,6 +168,9 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 .btn-icon:hover { background: var(--line); }
 .onyx .btn-icon { background: var(--onyx-2); color: var(--onyx-ink); }
 
+.back-btn { display: inline-flex; align-items: center; gap: 4px; height: 40px; margin-top: 8px; padding: 0 16px 0 10px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow-1); font-weight: 500; font-size: 14.5px; color: var(--ink); transition: transform .2s var(--ease-out); }
+.back-btn:hover { transform: translateX(-2px); }
+.back-btn .i { transform: rotate(180deg); width: 18px; height: 18px; }
 .scr-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 10px 0 18px; }
 .scr-title { font: 600 34px/1.05 var(--f-display); letter-spacing: -.02em; display: flex; align-items: center; gap: 12px; text-wrap: balance; }
 .scr-sub { color: var(--ink-3); margin-top: 6px; display: flex; align-items: center; gap: 8px; }
@@ -739,6 +742,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
   <symbol id="i-radar" viewBox="0 0 24 24"><path d="M19.1 4.9A10 10 0 1 1 4.9 4.9"/><path d="M16.2 7.8a6 6 0 1 1-8.4 0"/><circle cx="12" cy="12" r="2"/><path d="M12 12 19 5"/></symbol>
   <symbol id="i-dash" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="3"/><path d="m8 14 2-3"/><path d="M14 14h4"/><circle cx="8" cy="14" r=".5"/></symbol>
   <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2.5"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+  <symbol id="i-bt" viewBox="0 0 24 24"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></symbol>
   <symbol id="i-network" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="5" rx="1.2"/><rect x="2.5" y="16.5" width="6" height="5" rx="1.2"/><rect x="15.5" y="16.5" width="6" height="5" rx="1.2"/><path d="M12 7.5v4.5"/><path d="M5.5 16.5V12h13v4.5"/></symbol>
   <symbol id="i-switch" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="5"/><circle cx="16" cy="12" r="2.5"/></symbol>
   <symbol id="i-odo" viewBox="0 0 24 24"><path d="M3.3 17a10 10 0 1 1 17.4 0"/><path d="m8.5 13 2.2 2.2 4.8-4.8"/></symbol>
@@ -1031,9 +1035,16 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 
     <!-- Scanner -->
     <div class="screen" id="screen-scanner">
-      <header class="scr-head"><div><h1 class="scr-title">Scanner réseau</h1><p class="scr-sub">Recherche des boîtiers ELM327 Wi-Fi sur le réseau local.</p></div></header>
+      <header class="scr-head"><div><h1 class="scr-title">Trouver mon boîtier</h1><p class="scr-sub">Recherche des boîtiers ELM327 en Bluetooth ou en Wi-Fi.</p></div></header>
       <div class="stack">
-        <section class="panel">
+        <section class="panel" id="scanBleSec">
+          <div class="panel-h"><span class="ico-tile accent"><svg class="i"><use href="#i-bt"/></svg></span><span class="panel-t">Bluetooth</span></div>
+          <p style="color:var(--ink-2);margin:0 0 14px;max-width:62ch">Les boîtiers Bluetooth à portée apparaissent dans la liste de votre téléphone : choisissez le vôtre, AUTORYX s'y connecte aussitôt.</p>
+          <button class="btn btn-primary" onclick="bleConnect('scanBleStatus')"><svg class="i"><use href="#i-search"/></svg>Rechercher en Bluetooth</button>
+          <p class="panel-sub" id="scanBleStatus" style="margin:12px 0 0" role="status"></p>
+        </section>
+        <section class="panel" id="scanWifiSec">
+          <div class="panel-h"><span class="ico-tile"><svg class="i"><use href="#i-wifi"/></svg></span><span class="panel-t">Wi-Fi</span></div>
           <p style="color:var(--ink-2);margin-bottom:14px;max-width:62ch">Teste les adresses IP courantes des boîtiers ELM327 Wi-Fi. Connectez d'abord votre appareil au Wi-Fi du boîtier.</p>
           <button class="btn btn-primary" onclick="scanNetwork()"><svg class="i"><use href="#i-wifi"/></svg>Lancer le scan</button>
           <div id="scanProgress" style="margin-top:16px;display:none">
@@ -1107,9 +1118,9 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
       <header class="scr-head"><div><h1 class="scr-title">Connexion</h1><p class="scr-sub">Branchez le boîtier sur la prise OBD, contact mis.</p></div></header>
       <div class="stack">
         <section class="panel" id="blePanel">
-          <div class="panel-h"><span class="ico-tile accent"><svg class="i"><use href="#i-wifi"/></svg></span><span class="panel-t">Bluetooth direct</span><span class="chip push" id="bleSupport">iPhone · Android</span></div>
+          <div class="panel-h"><span class="ico-tile accent"><svg class="i"><use href="#i-bt"/></svg></span><span class="panel-t">Bluetooth direct</span><span class="chip push" id="bleSupport">iPhone · Android</span></div>
           <p class="panel-sub" style="margin:0 0 14px;max-width:62ch">Branchez le boîtier ELM327 sur la prise OBD, mettez le contact, puis lancez la recherche. Aucun ordinateur n'est nécessaire.</p>
-          <div class="d-actions"><button class="btn btn-primary" onclick="bleConnect()" id="bleBtn"><svg class="i"><use href="#i-search"/></svg>Connecter le boîtier Bluetooth</button></div>
+          <div class="d-actions"><button class="btn btn-primary" onclick="bleConnect()" id="bleBtn"><svg class="i"><use href="#i-search"/></svg>Rechercher un boîtier Bluetooth</button><button class="btn btn-ghost" id="bleDisconnBtn" onclick="disconnect()" hidden>Se déconnecter</button></div>
           <p class="panel-sub" id="bleStatus" style="margin:12px 0 0" role="status"></p>
           <details class="fold" style="margin-top:12px" ontoggle="if(this.open)paintBleLog()">
             <summary><span class="panel-sub" style="color:var(--ink-2);font-weight:500">Journal des échanges avec le boîtier</span></summary>
@@ -1123,8 +1134,9 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
             <button class="btn btn-primary" onclick="connectSim()"><svg class="i"><use href="#i-play"/></svg>Activer la démo</button>
           </div>
         </section>
-        <section class="panel">
-          <div class="panel-h"><span class="ico-tile"><svg class="i"><use href="#i-plug"/></svg></span><span class="panel-t">Via un ordinateur (serveur AUTORYX)</span></div>
+        <details class="panel fold">
+          <summary><span class="panel-t">Avancé : via un ordinateur</span><span class="panel-sub">nécessite le serveur AUTORYX lancé sur un PC</span></summary>
+          <div style="height:14px"></div>
           <div class="conn-form">
             <div class="field">
               <label for="connType">Type de connexion</label>
@@ -1143,10 +1155,13 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
             <div class="d-actions">
               <button class="btn btn-primary" onclick="connect()" id="connBtn">Se connecter</button>
               <button class="btn btn-ghost" id="disconnBtn" onclick="disconnect()" style="display:none">Se déconnecter</button>
-              <button class="btn btn-soft" onclick="showScreen('scanner')"><svg class="i"><use href="#i-wifi"/></svg>Trouver mon boîtier</button>
+              <button class="btn btn-soft" onclick="findForType()"><svg class="i"><use href="#i-search"/></svg>Trouver mon boîtier</button>
+            </div>
+            <div id="portList" class="stack" style="gap:8px"></div>
+            <div>
             </div>
           </div>
-        </section>
+        </details>
       </div>
     </div>
   </main>
@@ -1162,7 +1177,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
       <button class="sheet-item" onclick="showScreen('logger')" id="tab-logger"><span class="tile"><svg class="i"><use href="#i-rec"/></svg></span>Enregistreur</button>
       <button class="sheet-item" onclick="showScreen('coding');loadCodingOptions()" id="tab-coding"><span class="tile"><svg class="i"><use href="#i-sliders"/></svg></span>Codage ECU</button>
       <button class="sheet-item" onclick="showScreen('report')" id="tab-report"><span class="tile"><svg class="i"><use href="#i-file"/></svg></span>Rapport</button>
-      <button class="sheet-item" onclick="showScreen('scanner')" id="tab-scanner"><span class="tile"><svg class="i"><use href="#i-wifi"/></svg></span>Scanner réseau</button>
+      <button class="sheet-item" onclick="openScanner()" id="tab-scanner"><span class="tile"><svg class="i"><use href="#i-wifi"/></svg></span>Trouver mon boîtier</button>
       <button class="sheet-item" onclick="showScreen('vin')" id="tab-vin2"><span class="tile"><svg class="i"><use href="#i-id"/></svg></span>Décodage VIN</button>
       <button class="sheet-item" onclick="showScreen('connect')" id="tab-connect"><span class="tile"><svg class="i"><use href="#i-plug"/></svg></span>Connexion</button>
     </div>
@@ -1308,7 +1323,9 @@ const SIM = {
 
 // ── Navigation ─────────────────────────────────────────────────────────
 const MAIN_TABS = ['dashboard', 'live', 'dtc', 'services'];
-function showScreen(id) {
+let _curScreen = 'dashboard', _navDepth = 0, _scanMode = null;
+function openScanner(mode) { _scanMode = mode; showScreen('scanner'); }
+function showScreen(id, fromHistory) {
   toggleMore(false);
   hideTip();
   if (id !== 'actuators' && typeof _act !== 'undefined' && _act && _act.timer) stopActuator(true);
@@ -1317,14 +1334,33 @@ function showScreen(id) {
   document.getElementById('screen-' + id).classList.add('active');
   document.getElementById(MAIN_TABS.includes(id) ? 'tab-' + id : 'tab-more').classList.add('active');
   window.scrollTo({ top: 0 });
+  if (!fromHistory && _curScreen !== id) { history.pushState({ screen: id }, '', '#' + id); _navDepth++; }
+  _curScreen = id;
   if (id === 'dashboard') refreshDashboard();
   if (id === 'services') loadProcs();
+  if (id === 'scanner') {
+    document.getElementById('scanBleSec').hidden = _scanMode === 'wifi';
+    document.getElementById('scanWifiSec').hidden = _scanMode === 'ble';
+    _scanMode = null;
+  }
   if (id === 'live') buildLiveGrid();
   if (id === 'actuators') renderActuators();
   if (id === 'report') renderHistory();
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { toggleMore(false); hideTip(); } });
 const svgI = name => `<svg class="i"><use href="#i-${name}"/></svg>`;
+history.replaceState({ screen: 'dashboard' }, '');
+window.addEventListener('popstate', e => {
+  _navDepth = Math.max(0, _navDepth - 1);
+  const id = (e.state && e.state.screen) || 'dashboard';
+  if (document.getElementById('screen-' + id)) showScreen(id, true);
+});
+function goBack() { if (_navDepth > 0) history.back(); else showScreen('dashboard'); }
+document.querySelectorAll('.screen').forEach(s => {
+  const id = s.id.replace('screen-', '');
+  const head = s.querySelector('.scr-head');
+  if (!MAIN_TABS.includes(id) && head) head.insertAdjacentHTML('beforebegin', '<button class="back-btn" onclick="goBack()"><svg class="i"><use href="#i-chevron"/></svg>Retour</button>');
+});
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ── Toast ──────────────────────────────────────────────────────────────
@@ -1363,6 +1399,7 @@ function updateConnUI(ok, sim) {
   dot.className = 'conn-dot' + (ok ? (sim ? ' sim' : ' ok') : '');
   label.textContent = ok ? (sim ? 'Démo' : bleMode ? 'Bluetooth' : 'Connecté') : 'Non connecté';
   disc.style.display = ok ? '' : 'none';
+  document.getElementById('bleDisconnBtn').hidden = !ok;
   connBtn.style.display = ok ? 'none' : '';
   connected = ok;
   document.getElementById('vehName').textContent = ok ? (sim ? 'Véhicule de démonstration' : 'Véhicule connecté') : 'Aucun véhicule';
@@ -1402,9 +1439,9 @@ function autoVin(vin) {
   const vi = document.getElementById('vinInput'); if (vi && !vi.value) vi.value = vin;
 }
 
-async function bleConnect() {
-  const st = document.getElementById('bleStatus'), btn = document.getElementById('bleBtn');
-  const say = t => { st.textContent = t; paintBleLog(); };
+async function bleConnect(statusId = 'bleStatus') {
+  const st = document.getElementById(statusId), btn = document.getElementById('bleBtn');
+  const say = t => { st.textContent = t; document.getElementById('bleStatus').textContent = t; paintBleLog(); };
   btn.disabled = true;
   ObdBle.note('Bouton « Connecter » appuyé');
   say('Démarrage de la recherche Bluetooth…');
@@ -1426,7 +1463,9 @@ async function bleConnect() {
     showScreen('dashboard');
   } catch (e) {
     ObdBle.note(`Erreur ${e.name || ''} : ${e.message || e}`);
-    say(e.name === 'NotFoundError' ? 'Aucun boîtier sélectionné (liste fermée ou boîtier introuvable).' : `Échec : ${e.message || e}`);
+    say(/permissions policy/i.test(e.message || '')
+      ? "Le Bluetooth est bloqué dans cet aperçu. Ouvrez kevinopp95.github.io/autoryx dans Bluefy (iPhone) ou Chrome (Android, PC)."
+      : e.name === 'NotFoundError' ? 'Aucun boîtier sélectionné (liste fermée ou boîtier introuvable).' : `Échec : ${e.message || e}`);
   } finally { btn.disabled = false; }
 }
 function paintBleLog() {
@@ -1441,11 +1480,32 @@ function copyBleLog() {
 }
 window.addEventListener('error', e => ObdBle.note('Erreur page : ' + e.message));
 window.addEventListener('unhandledrejection', e => ObdBle.note('Erreur : ' + (e.reason && e.reason.message || e.reason)));
-ObdBle.note(`Page chargée · version 2026-11-10.2 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
+ObdBle.note(`Page chargée · version 2026-11-10.3 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
 if (!navigator.bluetooth) {
   const chip = document.getElementById('bleSupport');
   chip.textContent = 'Ouvrir dans Bluefy'; chip.className = 'chip push warn';
   document.getElementById('bleStatus').textContent = "Ce navigateur ne gère pas le Bluetooth. Sur iPhone, ouvrez cette page dans l'app gratuite Bluefy ; sur Android, dans Chrome.";
+}
+
+async function findForType() {
+  const type = document.getElementById('connType').value;
+  if (type === 'wifi' || type === 'tcp') { openScanner('wifi'); return; }
+  const box = document.getElementById('portList');
+  box.innerHTML = '<p class="panel-sub" style="margin:0">Recherche des ports du PC…</p>';
+  let ports = [];
+  try { ports = (await api('/connection/scan-ports')).ports || []; }
+  catch (e) {
+    box.innerHTML = `<p class="panel-sub" style="margin:0">Recherche impossible : le serveur AUTORYX ne répond pas sur ce PC. Lancez Demarrer-AUTORYX.bat, ou utilisez « Bluetooth direct » plus haut.</p>`;
+    return;
+  }
+  if (!ports.length) {
+    box.innerHTML = `<p class="panel-sub" style="margin:0">Aucun port trouvé. ${type === 'bluetooth' ? 'Appairez d\'abord le boîtier dans les paramètres Bluetooth de Windows : il apparaîtra comme un port COM.' : 'Branchez le câble USB du boîtier.'}</p>`;
+    return;
+  }
+  const bt = p => /bluetooth/i.test(p.description + ' ' + p.hwid);
+  ports.sort((a, b) => (type === 'bluetooth' ? bt(b) - bt(a) : bt(a) - bt(b)));
+  box.innerHTML = ports.map(p => `<button class="check" style="width:100%;text-align:left" onclick="document.getElementById('connHost').value='${esc(p.port)}';toast('Port ${esc(p.port)} choisi')">
+      <span class="ci">${svgI(bt(p) ? 'bt' : 'plug')}</span><div><b>${esc(p.port)}</b><span>${esc(p.description || '')}</span></div><span class="v">Choisir</span></button>`).join('');
 }
 
 const CONN_FIELDS = {
