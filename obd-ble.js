@@ -229,21 +229,29 @@ const ObdBle = (() => {
     link.chain = p.catch(() => {});
     return p;
   }
+  function note(text) { link.log.push(`[${new Date().toLocaleTimeString('fr-FR')}] ${text}`); if (link.log.length > 200) link.log.shift(); }
   async function connect(onStep = () => {}) {
+    const step = t => { note(t); onStep(t); };
     if (!navigator.bluetooth) throw new Error("Bluetooth indisponible dans ce navigateur. Sur iPhone, ouvrez AUTORYX dans l'app Bluefy ; sur Android, dans Chrome.");
-    onStep('Choisissez votre boîtier dans la liste');
+    try { note('Bluetooth disponible : ' + (navigator.bluetooth.getAvailability ? await navigator.bluetooth.getAvailability() : 'inconnu')); } catch (e) { note('getAvailability : ' + e.message); }
+    step('Ouverture de la liste des appareils Bluetooth…');
     const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SERVICES });
-    onStep('Connexion au boîtier ' + (device.name || ''));
+    step('Appareil choisi : ' + (device.name || 'sans nom') + '. Connexion…');
     const gatt = await device.gatt.connect();
+    step('Connecté au boîtier, recherche du canal série…');
     let rx = null, tx = null;
-    for (const s of await gatt.getPrimaryServices()) {
+    const services = await gatt.getPrimaryServices();
+    note('Services trouvés : ' + (services.map(s => s.uuid).join(', ') || 'aucun'));
+    for (const s of services) {
       let chars = [];
-      try { chars = await s.getCharacteristics(); } catch { continue; }
+      try { chars = await s.getCharacteristics(); } catch (e) { note(`Service ${s.uuid} illisible : ${e.message}`); continue; }
+      note(`Service ${s.uuid} : ` + chars.map(c => `${c.uuid}[${['read', 'write', 'writeWithoutResponse', 'notify', 'indicate'].filter(p => c.properties[p]).join('+')}]`).join(' '));
       const n = chars.find(c => c.properties.notify || c.properties.indicate);
       const w = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
       if (n && w) { rx = n; tx = w; break; }
     }
-    if (!rx || !tx) { gatt.disconnect(); throw new Error("Ce boîtier n'expose pas de canal série Bluetooth reconnu."); }
+    if (!rx || !tx) { gatt.disconnect(); throw new Error("Ce boîtier n'expose pas de canal série Bluetooth reconnu (voir le journal)."); }
+    note(`Canal série : réception ${rx.uuid}, envoi ${tx.uuid}`);
     await rx.startNotifications();
     rx.addEventListener('characteristicvaluechanged', onData);
     device.addEventListener('gattserverdisconnected', () => { link.tx = null; link.rx = null; if (link.onLost) link.onLost(); });
@@ -258,6 +266,6 @@ const ObdBle = (() => {
   }
   function disconnect() { try { link.device && link.device.gatt.connected && link.device.gatt.disconnect(); } catch {} link.tx = null; link.rx = null; }
 
-  return { connect, disconnect, send, link, createEngine, hexBytes, pidData, byHeader, parseVin, parseDtcs, PIDS };
+  return { connect, disconnect, send, link, note, createEngine, hexBytes, pidData, byHeader, parseVin, parseDtcs, PIDS };
 })();
 if (typeof module !== 'undefined') module.exports = ObdBle;

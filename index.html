@@ -1404,8 +1404,10 @@ function autoVin(vin) {
 
 async function bleConnect() {
   const st = document.getElementById('bleStatus'), btn = document.getElementById('bleBtn');
-  const say = t => { st.textContent = t; };
+  const say = t => { st.textContent = t; paintBleLog(); };
   btn.disabled = true;
+  ObdBle.note('Bouton « Connecter » appuyé');
+  say('Démarrage de la recherche Bluetooth…');
   try {
     if (bleMode) disconnect();
     const info = await ObdBle.connect(say);
@@ -1423,7 +1425,8 @@ async function bleConnect() {
     toast('Boîtier connecté');
     showScreen('dashboard');
   } catch (e) {
-    say(e.name === 'NotFoundError' ? 'Aucun boîtier sélectionné.' : e.message);
+    ObdBle.note(`Erreur ${e.name || ''} : ${e.message || e}`);
+    say(e.name === 'NotFoundError' ? 'Aucun boîtier sélectionné (liste fermée ou boîtier introuvable).' : `Échec : ${e.message || e}`);
   } finally { btn.disabled = false; }
 }
 function paintBleLog() {
@@ -1436,6 +1439,9 @@ function copyBleLog() {
   const sel = () => { const r = document.createRange(); r.selectNodeContents(pre); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Journal sélectionné : copiez-le'); };
   try { navigator.clipboard.writeText(pre.textContent).then(() => toast('Journal copié'), sel); } catch { sel(); }
 }
+window.addEventListener('error', e => ObdBle.note('Erreur page : ' + e.message));
+window.addEventListener('unhandledrejection', e => ObdBle.note('Erreur : ' + (e.reason && e.reason.message || e.reason)));
+ObdBle.note(`Page chargée · version 2026-11-10.2 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
 if (!navigator.bluetooth) {
   const chip = document.getElementById('bleSupport');
   chip.textContent = 'Ouvrir dans Bluefy'; chip.className = 'chip push warn';
