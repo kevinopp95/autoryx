@@ -1562,7 +1562,7 @@ function copyBleLog() {
 }
 window.addEventListener('error', e => ObdBle.note('Erreur page : ' + e.message));
 window.addEventListener('unhandledrejection', e => ObdBle.note('Erreur : ' + (e.reason && e.reason.message || e.reason)));
-ObdBle.note(`Page chargée · version 2026-11-11.1 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
+ObdBle.note(`Page chargée · version 2026-11-11.2 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
 if (!navigator.bluetooth) {
   const chip = document.getElementById('bleSupport');
   chip.textContent = 'Ouvrir dans Bluefy'; chip.className = 'chip push warn';

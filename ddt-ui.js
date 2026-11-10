@@ -40,6 +40,20 @@ const DdtUi = (() => {
     const f = input.files && input.files[0]; if (!f) return;
     try {
       const head = await Ddt.readJson(f);
+      if (head.format === 'autoryx-bundle/1') {   // everything in one file: model bases + fault-code labels
+        const list = new Set(await listStored());
+        for (const p of head.packs || []) {
+          await idbPut('pack_' + p.project, new Blob([JSON.stringify(p)], { type: 'application/json' }));
+          list.add(p.project);
+        }
+        await idbPut('packs', [...list]);
+        if (head.codes) { await idbPut('dtcpack', new Blob([JSON.stringify(head.codes)], { type: 'application/json' })); globalThis.DTC_LOCAL = head.codes.codes; }
+        pack = null; packInfo = null; await loadStored();
+        toast(`Importé : ${(head.packs || []).map(p => MODEL_NAMES[p.project] || p.project).join(', ')}${head.codes ? ` et ${head.codes.count} libellés de codes` : ''}. C'est enregistré dans le téléphone.`, 6000);
+        input.value = ''; renderPackPanel();
+        if (typeof _lastScan !== 'undefined' && _lastScan) renderModules(_lastScan);
+        return;
+      }
       if (head.format === 'autoryx-dtc-pack/1') {
         await idbPut('dtcpack', f);
         globalThis.DTC_LOCAL = head.codes;
