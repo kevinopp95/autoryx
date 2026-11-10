@@ -170,17 +170,33 @@ const Ddt = (() => {
     values[changeName] = BigInt(changeRaw);
     return { bytes: build(ecu, w.write, values), before, values };
   }
-  async function unpack(blob) {
+  async function readJson(blob) {
     let text;
     const head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
     if (head[0] === 0x1F && head[1] === 0x8B) {
       if (typeof DecompressionStream === 'undefined') throw new Error('Ce navigateur ne sait pas décompresser le fichier (.gz).');
       text = await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
     } else text = await blob.text();
-    const pack = JSON.parse(text);
-    if (pack.format !== 'autoryx-ddt-pack/1' || !pack.ecus) throw new Error('Ce fichier n\'est pas une base AUTORYX.');
+    return JSON.parse(text);
+  }
+  async function unpack(blob) {
+    const pack = await readJson(blob);
+    if (!/^autoryx-ddt-pack\/[12]$/.test(pack.format || '') || !pack.ecus) throw new Error('Ce fichier n\'est pas une base AUTORYX.');
     return pack;
   }
-  return { hx, fromHex, getRaw, display, setRaw, decodeAll, identKwp, identUds, match, catalogue, build, planWrite, unpack, sid, BLOCK_NAME };
+  // Full description of one ECU file (format 2 keeps each file compressed until it is needed).
+  async function def(pack, name) {
+    const e = pack && pack.ecus[name];
+    if (!e) return null;
+    if (e.requests) return e;
+    const b64 = pack.files && pack.files[name];
+    if (!b64) return null;
+    const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const text = await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    Object.assign(e, JSON.parse(text));
+    delete pack.files[name];
+    return e;
+  }
+  return { readJson, def, hx, fromHex, getRaw, display, setRaw, decodeAll, identKwp, identUds, match, catalogue, build, planWrite, unpack, sid, BLOCK_NAME };
 })();
 if (typeof module !== 'undefined') module.exports = Ddt;

@@ -204,6 +204,13 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 .d-title { font: 600 clamp(44px, 12vw, 84px)/.92 var(--f-display); letter-spacing: -.035em; text-transform: uppercase; }
 .d-veh { margin-top: 10px; color: var(--ink-3); font-size: 15px; }
 .d-veh b { color: var(--ink); font-weight: 500; }
+.veh-grid { display: grid; grid-template-columns: repeat(3, minmax(0, auto)); gap: 10px 22px; justify-content: start; }
+.veh-grid > span { display: grid; gap: 2px; min-width: 0; }
+.veh-grid small { font-size: 12px; color: var(--ink-3); letter-spacing: .02em; }
+.veh-grid b { font-size: 15.5px; }
+.veh-grid .vin { grid-column: 1 / -1; }
+.veh-grid .vin b { font-size: 14px; letter-spacing: .04em; overflow-wrap: anywhere; }
+.d-veh-note { display: block; margin-top: 6px; font-size: 12.5px; }
 .d-status { list-style: none; margin: 18px 0 20px; display: grid; gap: 6px; }
 .d-status li { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 14px; border-radius: 14px; font-weight: 500; letter-spacing: .02em; text-transform: uppercase; font-size: 13.5px; }
 .d-status li .tag { min-width: 52px; font: 500 13px/1 var(--f-mono); letter-spacing: 0; color: var(--ink-3); text-transform: none; }
@@ -725,6 +732,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="renault-ecus.js"></script>
+<script src="dtc-codes.js"></script>
 <script src="obd-ble.js"></script>
 </head>
 <body>
@@ -1097,7 +1105,7 @@ main { padding: 6px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(s
         <div><h1 class="scr-title">Scan complet</h1><p class="scr-sub">Chaque calculateur interrogé : identification, codes défaut, état sur le réseau.</p></div>
         <div class="head-actions">
           <button class="btn btn-soft" onclick="copyScanLog()" id="copyLogBtn" disabled><svg class="i"><use href="#i-copy"/></svg>Copier le journal</button>
-          <div class="scope" id="scanScope" role="group" aria-label="Étendue du scan Renault" hidden>
+          <div class="scope" id="scanScope" role="group" aria-label="Étendue du scan" hidden>
             <button aria-pressed="true" onclick="setScanScope(false)" id="scopeQuick">Principaux</button>
             <button aria-pressed="false" onclick="setScanScope(true)" id="scopeAll">Tous</button>
           </div>
@@ -1463,15 +1471,46 @@ function connectSim() {
 }
 
 let _vehicle = null;
+// Renault VIN, characters 4-5 → model and DDT project (pack). Only codes known for sure.
+const RENAULT_VDS = {
+  BB: ['Clio II', 'x65'], CB: ['Clio II', 'x65'], SB: ['Clio II', 'x65'],
+  BR: ['Clio III', 'x85'], CR: ['Clio III', 'x85'], KR: ['Clio III Estate', 'x85'],
+  BM: ['Mégane II', 'x84'], KM: ['Mégane II Estate', 'x84'], LM: ['Mégane II CC', 'x84'], DM: ['Mégane II Coupé', 'x84'], JM: ['Scénic II', 'x84'],
+  BZ: ['Mégane III', 'x95'], DZ: ['Mégane III Coupé', 'x95'], KZ: ['Mégane III Estate', 'x95'], EZ: ['Mégane III CC', 'x95'], JZ: ['Scénic III', 'x95'],
+  CN: ['Twingo II', 'x44'], FW: ['Kangoo II', 'x61'], KW: ['Kangoo II', 'x61'], BT: ['Laguna III', 'x91'], KT: ['Laguna III Estate', 'x91'], DT: ['Laguna III Coupé', 'x91'],
+};
+function vinModel(vin) {
+  if (!vin || !/^VF1/.test(vin)) return null;
+  const m = RENAULT_VDS[vin.slice(3, 5)];
+  return m ? { name: m[0], project: m[1] } : null;
+}
+function paintVehicle() {
+  const v = _vehicle;
+  const el = document.getElementById('dashVehicle');
+  if (!v) { el.textContent = 'Aucun véhicule connecté'; return; }
+  const km = v.km != null ? fmtKm(v.km) : (bleMode ? 'lancez le diagnostic' : '—');
+  el.innerHTML = `<span class="veh-grid"><span><small>Marque</small><b>${esc(v.brand)}</b></span><span><small>Modèle</small><b>${esc(v.model || '—')}</b></span>
+    <span><small>Kilométrage</small><b>${esc(km)}</b></span><span class="vin"><small>VIN</small><b class="mono">${esc(v.vin)}</b></span></span>${simMode ? '<span class="d-veh-note">Données simulées</span>' : ''}`;
+}
+async function refreshOdometer() {
+  if (!bleMode || typeof DdtUi === 'undefined') return;
+  try {
+    const r = await DdtUi.readOdometer();
+    if (r && _vehicle) { _vehicle.km = r.km; _vehicle.kmSource = r.source; paintVehicle(); const k = document.getElementById('repKm'); if (k && !k.value) k.value = r.km; }
+  } catch {}
+}
+
 function autoVin(vin) {
   if (!vin || vin.length !== 17) return;
   const d = SIM.decodeVin(vin);
-  if (/^[S-Z]/.test(vin) && vin !== SIM_VIN) d.model_year = 0;
-  _vehicle = { vin, brand: d.brand, year: d.model_year, country: d.country };
-  const label = `${d.brand}${d.model_year ? ' · ' + d.model_year : ''}`;
+  if (/^(VF1|UU1|VF3|VF7|VR3|VR7)/.test(vin) && vin !== SIM_VIN) d.model_year = 0;   // Renault and PSA do not code the year
+  const mdl = vinModel(vin);
+  _vehicle = { vin, brand: d.brand, year: d.model_year, country: d.country, model: mdl ? mdl.name : (simMode ? 'Clio IV' : ''), project: mdl ? mdl.project : null, km: simMode ? 84230 : null };
+  const label = `${d.brand}${_vehicle.model ? ' ' + _vehicle.model : ''}${d.model_year ? ' · ' + d.model_year : ''}`;
   document.getElementById('vehName').textContent = label;
   document.getElementById('vehSub').textContent = 'VIN ' + vin.slice(0, 3) + '…' + vin.slice(-6) + (simMode ? ' · démo' : '');
-  document.getElementById('dashVehicle').innerHTML = `<b>${esc(label)}</b> · VIN lu automatiquement${simMode ? ' · données simulées' : ''}`;
+  paintVehicle();
+  if (typeof DdtUi !== 'undefined') DdtUi.renderPackPanel();
   const rv = document.getElementById('repVeh'); if (rv && !rv.value) rv.value = label;
   const vi = document.getElementById('vinInput'); if (vi && !vi.value) vi.value = vin;
 }
@@ -1497,7 +1536,11 @@ async function bleConnect(statusId = 'bleStatus') {
     updateConnUI(true, false);
     say(`Connecté à ${info.name}${info.version ? ' (' + info.version + ')' : ''}${info.protocol ? ' · ' + info.protocol : ''}`);
     try { const v = await api('/vehicle/vin'); autoVin(v.vin); } catch (e) { toast(e.message, 5000); }
-    try { _supported = await api('/live/supported'); ObdBle.note('PID fournis : ' + _supported.join(' ')); } catch {}
+    try {
+      _supported = await api('/live/supported'); ObdBle.note('PID fournis : ' + _supported.join(' '));
+      const keep = _livePids.filter(pid => !pidMissing(pid));
+      if (keep.length && keep.length !== _livePids.length) { _livePids = keep; buildLiveGrid(); }
+    } catch {}
     toast('Boîtier connecté');
     showScreen('dashboard');
   } catch (e) {
@@ -1519,7 +1562,7 @@ function copyBleLog() {
 }
 window.addEventListener('error', e => ObdBle.note('Erreur page : ' + e.message));
 window.addEventListener('unhandledrejection', e => ObdBle.note('Erreur : ' + (e.reason && e.reason.message || e.reason)));
-ObdBle.note(`Page chargée · version 2026-11-10.6 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
+ObdBle.note(`Page chargée · version 2026-11-11.1 · ${navigator.userAgent.slice(0, 120)} · Bluetooth ${navigator.bluetooth ? 'présent' : 'absent'}`);
 if (!navigator.bluetooth) {
   const chip = document.getElementById('bleSupport');
   chip.textContent = 'Ouvrir dans Bluefy'; chip.className = 'chip push warn';
@@ -1697,6 +1740,7 @@ function scanEcus() {
   document.getElementById('hotspots').innerHTML = '';
   document.getElementById('assistDot').classList.add('busy');
   document.getElementById('assistState').textContent = 'Analyse en cours…';
+  if (bleMode) { setScanScope(false); runFullScan().then(() => refreshDashboard(true)); return; }
   setTimeout(() => refreshDashboard(true), 1100);
 }
 
@@ -1959,9 +2003,29 @@ const DTC_DB = {
   B1013:{description:'Clockspring (spirale de contact) — circuit ouvert',detail:'Rupture du ruban conducteur dans la spirale de contact du volant',severity:'critical',system:'sécurité',likely_causes:['Spirale de contact usée/cassée','Volant démonté sans précaution']},
   B1017:{description:'ECU airbag — défaut interne',detail:'Défaillance interne calculateur ACU',severity:'critical',system:'sécurité',likely_causes:['ECU airbag défaillant','Humidité connecteur ACU']},
 };
+// Any code, any brand: what its structure says (SAE J2012), in French.
+function dtcFamily(code) {
+  const c = String(code || '').toUpperCase();
+  if (!/^[PCBU][0-3][0-9A-F]{3}$/.test(c)) return null;
+  const sys = { P: 'moteur et boîte', C: 'châssis', B: 'carrosserie', U: 'réseau de communication' }[c[0]];
+  const maker = c[0] === 'P' ? (c[1] === '1' || (c[1] === '3' && parseInt(c[2], 16) <= 3)) : (c[1] === '1' || c[1] === '2');
+  const area = c[0] !== 'P' ? '' : ({ '0': 'mesure air / carburant', '1': 'mesure air / carburant', '2': 'injection', '3': 'allumage, ratés', '4': 'antipollution', '5': 'vitesse, ralenti, entrées', '6': 'calculateur et sorties', '7': 'boîte de vitesses', '8': 'boîte de vitesses', '9': 'boîte de vitesses', 'A': 'propulsion hybride', 'B': 'propulsion hybride', 'C': 'propulsion hybride' })[c[2]] || '';
+  return { maker, system: sys, family: `${maker ? 'Code propre au constructeur' : 'Code normalisé'} · ${sys}${area ? ' · ' + area : ''}` };
+}
 function dtcEnrich(d) {
-  const info = DTC_DB[d.code] || {};
-  return {...d, ...info, code: d.code};
+  const fam = dtcFamily(d.code) || {};
+  let info = DTC_DB[d.code];
+  if (!info && !fam.maker && typeof DTC_EXT !== 'undefined' && DTC_EXT[d.code]) {
+    const [desc, severity, system] = DTC_EXT[d.code];
+    info = { description: desc, detail: fam.family, severity, system, lang: 'en' };
+  } else if (!info && !fam.maker && globalThis.DTC_LOCAL && DTC_LOCAL[d.code]) {
+    info = { description: DTC_LOCAL[d.code], detail: fam.family, system: fam.system, lang: 'en' };
+  }
+  if (!info) info = { detail: fam.family || '', system: fam.system || '' };
+  const out = { ...d, ...info, code: d.code };
+  if (d.description && (!DTC_DB[d.code] || d.ecu && d.ecu !== '7E0')) out.description = d.description;   // the ECU's own label (Renault base) wins
+  if (!out.description) out.description = d.description || (fam.family ? fam.family : 'Code non répertorié');
+  return out;
 }
 
 // ── DTC ───────────────────────────────────────────────────────────────
@@ -2027,6 +2091,11 @@ function clearDtcs() {
 // ── Service procedures (100% local) ───────────────────────────────────
 let _procCat = 'Toutes';
 function loadProcs() {
+  const bt = bleMode && typeof DdtUi !== 'undefined';
+  document.getElementById('procSearch').closest('label').hidden = bt;
+  document.getElementById('procFilters').hidden = bt;
+  document.getElementById('procResult').style.display = 'none';
+  if (bt) { document.getElementById('procCount').textContent = '…'; DdtUi.hub('proc', document.getElementById('procList')).then(() => { document.getElementById('procCount').textContent = document.querySelectorAll('#procList article').length; }); return; }
   const procs = SIM.procedures();
   document.getElementById('procCount').textContent = procs.length;
   const cats = ['Toutes', ...[...new Set(procs.map(p => p.category))].sort((a, b) => a.localeCompare(b, 'fr'))];
@@ -2101,16 +2170,21 @@ function decodeVin() {
   const resEl = document.getElementById('vinResult');
   resEl.style.display = 'block';
   const d = SIM.decodeVin(vin);
+  if (/^(VF1|UU1|VF3|VF7|VR3|VR7)/.test(vin) && vin !== SIM_VIN) d.model_year = 0;
+  const mdl = vinModel(vin);
+  const scanned = !simMode && _lastScan ? _lastScan.ecus : null;
+  d.ecu_list = simMode ? d.ecu_list : (scanned || []).map(e => ({ address: e.address, name: shortName(e.name) }));
   resEl.innerHTML = `
     <div class="vin-result">
       <div class="vin-row"><span class="vin-row-label">Marque</span><span class="vin-row-val">${d.brand}</span></div>
       <div class="vin-row"><span class="vin-row-label">Constructeur</span><span class="vin-row-val">${d.manufacturer}</span></div>
       <div class="vin-row"><span class="vin-row-label">Pays d'assemblage</span><span class="vin-row-val">${d.country}</span></div>
-      <div class="vin-row"><span class="vin-row-label">Année modèle</span><span class="vin-row-val">${d.model_year||'—'}</span></div>
+      <div class="vin-row"><span class="vin-row-label">Modèle</span><span class="vin-row-val">${mdl ? esc(mdl.name) : '—'}</span></div>
+      <div class="vin-row"><span class="vin-row-label">Année modèle</span><span class="vin-row-val">${d.model_year || 'non codée dans ce VIN'}</span></div>
       <div class="vin-row"><span class="vin-row-label">Code usine</span><span class="vin-row-val">${d.plant_code}</span></div>
       <div class="vin-row"><span class="vin-row-label">N° séquence</span><span class="vin-row-val">${d.sequence}</span></div>
     </div>
-    ${d.ecu_list.length?`<div class="sec-title" style="margin-top:16px">ECU connus · ${d.brand}</div><div class="ecu-grid">${d.ecu_list.slice(0,8).map(e=>`<div class="ecu-card"><div style="font-family:var(--font-m);font-size:11.5px;color:var(--amber)">${e.address}</div><div style="font-size:11px;font-weight:500;margin-top:3px">${e.name}</div></div>`).join('')}</div>`:''}`;
+    ${d.ecu_list.length?`<div class="sec-title" style="margin-top:16px">${simMode ? 'ECU connus' : 'Calculateurs trouvés au scan'} · ${d.brand}</div><div class="ecu-grid">${d.ecu_list.slice(0,8).map(e=>`<div class="ecu-card"><div style="font-family:var(--font-m);font-size:11.5px;color:var(--amber)">${e.address}</div><div style="font-size:11px;font-weight:500;margin-top:3px">${e.name}</div></div>`).join('')}</div>`:''}`;
 }
 
 // ── More menu toggle ─────────────────────────────────────────────────
@@ -2246,11 +2320,21 @@ async function loadRealMonitors() {
   }
   try {
     const f = await api('/diagnostics/freeze');
-    ff.innerHTML = !f.dtc ? '<div class="empty">Aucune donnée figée : aucun défaut n\'a déclenché d\'enregistrement.</div>' : `
+    ff.innerHTML = !f.dtc ? '<div class="empty">Rien à afficher, et c\'est bon signe : le calculateur moteur ne fige ces valeurs qu\'au moment où il enregistre un défaut. Aucun défaut moteur n\'est mémorisé.</div>' : `
       <div style="font-size:12px;color:var(--ink-3);margin-bottom:8px">Données capturées lors du déclenchement de <b class="mono">${esc(f.dtc)}</b></div>
       <div class="ff-grid">${f.values.map(v => `<div class="ff-item"><div class="ff-label">${esc(v.name)}</div><div class="ff-val">${fr(v.value, v.unit === 'V' ? 1 : 0)}<span style="font-size:11.5px;color:var(--ink-3);font-weight:400"> ${esc(v.unit)}</span></div></div>`).join('')}</div>`;
   } catch (e) { ff.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-  document.getElementById('mode06Grid').innerHTML = '<div class="empty">Les tests embarqués (mode 06) ne sont pas encore lus en Bluetooth direct. Les valeurs de démo ne sont jamais affichées sur un vrai véhicule.</div>';
+  const m6 = document.getElementById('mode06Grid');
+  m6.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+  try {
+    const r = await api('/diagnostics/mode06');
+    m6.innerHTML = !r.tests.length ? '<div class="empty">Aucun résultat : les tests embarqués se remplissent après un trajet complet (moteur chaud, route variée).</div>'
+      : r.tests.map(t => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)">
+        <span style="width:8px;height:8px;border-radius:50%;flex:none;background:${t.pass ? 'var(--ok)' : 'var(--crit)'}"></span>
+        <span style="flex:1;font-size:13.5px;min-width:0">${esc(t.name)}</span>
+        <span class="mono" style="font-size:12.5px;color:${t.pass ? 'var(--ink-2)' : 'var(--crit)'};text-align:right">${fr(t.value, 2)} ${esc(t.unit)}<br><span style="color:var(--ink-3)">[${fr(t.min, 2)} – ${fr(t.max, 2)}]</span></span></div>`).join('')
+        + `<p class="mon-note" style="margin-top:10px">${r.tests.filter(t => !t.pass).length ? 'Un test hors limites indique le composant à contrôler en priorité.' : 'Tous les tests sont dans les limites.'}</p>`;
+  } catch (e) { m6.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 // ── Logger ────────────────────────────────────────────────────────────
@@ -2617,14 +2701,28 @@ function mgRestore(id) {
 }
 
 // ── Rapport ───────────────────────────────────────────────────────────
+function reportText() {
+  const out = document.getElementById('reportOutput');
+  return out ? out.innerText.replace(/Partager le rapport|Copier le texte/g, '').trim() : '';
+}
+async function shareReport() {
+  const text = reportText();
+  try { if (navigator.share) { await navigator.share({ title: 'Rapport AUTORYX', text }); return; } } catch (e) { if (e && e.name === 'AbortError') return; }
+  copyReport();
+}
+function copyReport() {
+  const text = reportText();
+  const fallback = () => { const r = document.createRange(); r.selectNodeContents(document.getElementById('reportOutput')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Rapport sélectionné : copiez-le'); };
+  try { navigator.clipboard.writeText(text).then(() => toast('Rapport copié : collez-le dans un mail ou un message'), fallback); } catch { fallback(); }
+}
 function generateReport() {
   const tech = document.getElementById('repTech').value || 'Non renseigné';
   const veh  = document.getElementById('repVeh').value  || 'Véhicule inconnu';
-  const km   = document.getElementById('repKm').value   || '—';
+  const km   = document.getElementById('repKm').value   || (_vehicle && _vehicle.km != null ? _vehicle.km : '—');
   const notes= document.getElementById('repNotes').value|| '';
   const dtcs = simMode ? SIM.dtc() : _allDtcs;
   const params = simMode ? SIM.live() : [];
-  const ecus = simMode ? SIM.ecus() : [];
+  const ecus = simMode ? SIM.ecus() : ((_lastScan && _lastScan.ecus) || _dash.ecus || []);
   const critical = dtcs.filter(d => (DTC_DB[d.code]||{}).severity==='critical').length;
   const major    = dtcs.filter(d => (DTC_DB[d.code]||{}).severity==='major').length;
   const now = new Date().toLocaleString('fr-FR');
@@ -2644,7 +2742,7 @@ function generateReport() {
           <div class="report-kpi-item"><div class="report-kpi-val" style="color:var(--warn)">${major}</div><div class="report-kpi-label">Majeurs</div></div>
           <div class="report-kpi-item"><div class="report-kpi-val" style="color:var(--ok)">${ecus.filter(e=>e.reachable).length}</div><div class="report-kpi-label">ECU en ligne</div></div>
         </div>
-        ${dtcs.length ? `<div class="sec-title" style="margin:12px 0 8px">Codes défaut (${dtcs.length})</div>${dtcs.map(d=>{const info=DTC_DB[d.code]||{};return`<div class="dtc-item" style="margin-bottom:6px"><span class="dtc-code">${d.code}</span><div class="dtc-info"><div class="dtc-desc">${info.description||d.code}</div>${info.likely_causes?`<div class="dtc-causes">→ ${info.likely_causes.slice(0,2).join(' · ')}</div>`:''}</div><span class="sev ${info.severity||'info'}">${{critical:'CRITIQUE',major:'MAJEUR',minor:'MINEUR',info:'INFO'}[info.severity]||'INFO'}</span></div>`}).join('')}` : '<div style="font-size:12px;color:var(--ok);text-align:center;padding:8px">✓ Aucun défaut détecté</div>'}
+        ${dtcs.length ? `<div class="sec-title" style="margin:12px 0 8px">Codes défaut (${dtcs.length})</div>${dtcs.map(d=>{const info=dtcEnrich(d);return`<div class="dtc-item" style="margin-bottom:6px"><span class="dtc-code">${d.code}</span><div class="dtc-info"><div class="dtc-desc">${esc(info.description||d.code)}${d.ecu_name ? ` <span style="color:var(--ink-3)">· ${esc(shortName(d.ecu_name))}</span>` : ''}</div>${info.likely_causes?`<div class="dtc-causes">→ ${info.likely_causes.slice(0,2).join(' · ')}</div>`:''}</div><span class="sev ${info.severity||'info'}">${{critical:'CRITIQUE',major:'MAJEUR',minor:'MINEUR',info:'INFO'}[info.severity]||'INFO'}</span></div>`}).join('')}` : '<div style="font-size:12px;color:var(--ok);text-align:center;padding:8px">✓ Aucun défaut détecté</div>'}
         ${reportPrePost()}
         ${_usedCheck ? `<div class="sec-title" style="margin:12px 0 8px">Contrôle occasion</div><div style="font-size:13px;color:var(--fg2)">${esc(_usedCheck.title)}</div>` : ''}
         ${params.length ? `<div class="sec-title" style="margin:12px 0 8px">Paramètres live (snapshot)</div><div class="ff-grid">${params.slice(0,8).map(p=>`<div class="ff-item"><div class="ff-label">${p.name}</div><div class="ff-val">${typeof p.value==='number'?fr(p.value,1):p.value}<span style="font-size:11.5px;color:var(--fg3);font-weight:400"> ${p.unit}</span></div></div>`).join('')}</div>` : ''}
@@ -2654,7 +2752,7 @@ function generateReport() {
         </div>
       </div>
     </div>
-    <button class="btn btn-amber" onclick="window.print()" style="margin-top:12px">Imprimer / PDF</button>`;
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn btn-primary" onclick="shareReport()">${svgI('file')}Partager le rapport</button><button class="btn btn-soft" onclick="copyReport()">${svgI('copy')}Copier le texte</button></div>`;
   saveHistory({ t: now, veh, vin: _vehicle ? _vehicle.vin : '', km, score: computeHealthScore(dtcs, ecus), codes: dtcs.map(d => d.code) });
   renderHistory();
   toast('Rapport généré');
@@ -2748,14 +2846,15 @@ async function runFullScan() {
     const hadLive = liveRunning; stopLoops();
     const prog = document.getElementById('scanProg'), bar = document.getElementById('scanProgBar');
     prog.hidden = false;
-    document.getElementById('topo').innerHTML = '<div class="empty">Interrogation des calculateurs Renault…</div>';
+    document.getElementById('topo').innerHTML = '<div class="empty">Recherche des calculateurs du véhicule…</div>';
     try {
-      await api('/ecu/scan', { all: _scanAll, onProgress: ev => {
+      await api('/ecu/scan', { all: _scanAll, vin: _vehicle && _vehicle.vin, onProgress: ev => {
         bar.style.width = ((ev.index + 1) / ev.total * 100).toFixed(1) + '%';
         document.getElementById('topoMeta').textContent = `${ev.index + 1}/${ev.total} · ${ev.current[1]} · ${ev.found.length} trouvé${ev.found.length > 1 ? 's' : ''}`;
         btn.innerHTML = `<span class="spinner" style="width:18px;height:18px;border-width:2px;border-color:rgba(255,255,255,.35);border-top-color:#fff"></span>${ev.index + 1}/${ev.total}`;
       } });
     } catch (e) { toast('Scan interrompu : ' + e.message, 5000); }
+    if (typeof DdtUi !== 'undefined') await DdtUi.describeScan().catch(() => {});
     prog.hidden = true;
     if (hadLive && bleMode) toggleLive();
   }
@@ -2777,6 +2876,7 @@ async function runFullScan() {
   document.getElementById('logFold').hidden = false;
   document.getElementById('copyLogBtn').disabled = false;
   btn.disabled = false; btn.innerHTML = `${svgI('refresh')}Relancer le scan`;
+  if (bleMode) { refreshOdometer(); if (typeof DdtUi !== 'undefined') DdtUi.renderPackPanel(); }
 }
 
 let _scanAll = false;
@@ -2979,6 +3079,13 @@ const ACTUATORS = [
 let _act = null;
 function findAct(id) { for (const g of ACTUATORS) { const it = g.items.find(i => i.id === id); if (it) return { it, g }; } return null; }
 function renderActuators() {
+  const note = document.querySelector('#screen-actuators .note-warn');
+  if (bleMode && typeof DdtUi !== 'undefined') {
+    document.getElementById('actRun').innerHTML = '';
+    if (note) note.textContent = "Tests du constructeur, calculateur par calculateur. Moteur coupé, contact mis ; chaque test s'arrête seul après 10 secondes.";
+    DdtUi.hub('test', document.getElementById('actList'));
+    return;
+  }
   const ecus = simMode ? SIM.ecus() : _dash.ecus;
   document.getElementById('actList').innerHTML = ACTUATORS.map(g => {
     const e = ecus.find(x => x.address === g.ecu);
@@ -3266,6 +3373,6 @@ if ('serviceWorker' in navigator) {
 </script>
 <script src="ddt.js"></script>
 <script src="ddt-ui.js"></script>
-<script>DdtUi.loadStored().then(() => DdtUi.renderPackPanel());</script>
+<script>DdtUi.loadCodes().then(() => DdtUi.loadStored()).then(() => DdtUi.renderPackPanel());</script>
 </body>
 </html>

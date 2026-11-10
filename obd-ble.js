@@ -134,6 +134,47 @@ const ObdBle = (() => {
       decode: ([d]) => ({ 0x00: 'Non configuré', 0x01: 'Sans chauffage additionnel', 0x10: 'Chauffage 1 kW', 0x16: 'Chauffage 1,6 kW', 0x18: 'Chauffage 1,8 kW' })[d[0]] || `Valeur ${hx2(d[0])} non répertoriée` },
   ];
   const hx2 = b => (b ?? 0).toString(16).toUpperCase().padStart(2, '0');
+  // Brand family from the VIN (world manufacturer identifier).
+  function brandOf(vin) {
+    if (!vin) return 'unknown';
+    const w = String(vin || '').toUpperCase().slice(0, 3);
+    if (['VF1', 'UU1', 'VF6', 'VF8', 'X7L', 'UU3'].includes(w) || w === 'VFA') return 'renault';
+    if (['VF3', 'VF7', 'VR3', 'VR7', 'VR1', 'VXK', 'VXE', 'VXF'].includes(w)) return 'psa';
+    if (['WVW', 'WV1', 'WV2', 'WV3', 'WAU', 'WUA', 'TRU', 'TMB', 'VSS', 'VS6', 'WP0', 'WP1'].includes(w)) return 'vag';
+    return 'generic';
+  }
+  const hex3 = n => n.toString(16).toUpperCase().padStart(3, '0');
+  const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+  const OBD_PAIRS = range(0x7E0, 0x7E7).map(t => [t, t + 8]);
+  const GENERIC_NAMES = { 0x7E0: 'Moteur', 0x7E1: 'Boîte de vitesses', 0x7E2: 'Calculateur hybride / auxiliaire' };
+  const VAG_NAMES = { 0x7E0: 'Moteur', 0x7E1: 'Boîte de vitesses', 0x713: 'ABS / ESP', 0x715: 'Airbag', 0x710: 'Passerelle', 0x714: 'Combiné d\'instruments', 0x70E: 'Électronique centrale', 0x712: 'Direction assistée', 0x746: 'Climatisation' };
+  const PSA_NAMES = { 0x6A8: 'Moteur', 0x752: 'BSI (habitacle)' };
+  const QUICK_GENERIC = [0x7B0, 0x7C0, 0x7A0, 0x7D0, 0x7D1, 0x7D2, 0x726, 0x760, 0x720, 0x737, 0x770, 0x750, 0x7C6, 0x740, 0x744, 0x765, 0x7B1, 0x7C4, 0x784, 0x7A6];
+  const QUICK_VAG = [0x713, 0x715, 0x710, 0x714, 0x70E, 0x712, 0x746, 0x74F, 0x711, 0x70C, 0x70A, 0x716, 0x717, 0x75C, 0x76C, 0x74C];
+  // [code, name, description, tx, rx] like the Renault table; code is null outside Renault.
+  function candidates(brand, all) {
+    if (brand === 'renault') return all ? ECUS : ECUS.filter(e => QUICK_TX.includes(e[3]));
+    if (brand === 'unknown') {   // VIN not read: every family, without duplicates
+      const seen = new Set(), out = [];
+      for (const b of ['renault', 'vag', 'psa', 'generic']) for (const r of candidates(b, all)) { const k = r[3]; if (!seen.has(k)) { seen.add(k); out.push(r); } }
+      return out;
+    }
+    const row = (t, r, names) => [null, names[t] || 'Calculateur ' + hex3(t), '', hex3(t), hex3(r)];
+    const pairs = [...OBD_PAIRS];
+    let names = GENERIC_NAMES;
+    if (brand === 'vag') {
+      names = { ...GENERIC_NAMES, ...VAG_NAMES };
+      const vag = all ? range(0x700, 0x795) : QUICK_VAG;
+      vag.filter(t => !(t >= 0x7E0 && t <= 0x7E7)).forEach(t => pairs.push([t, t + 0x6A]));
+    } else if (brand === 'psa') {
+      names = { ...GENERIC_NAMES, ...PSA_NAMES };
+      range(0x6A0, 0x6BF).forEach(t => pairs.push([t, t - 0x20]));
+      (all ? range(0x740, 0x77F) : [0x752, 0x75F, 0x76D, 0x772, 0x75D, 0x764, 0x74C]).forEach(t => pairs.push([t, t - 0x100]));
+    } else {
+      (all ? range(0x700, 0x7DF) : QUICK_GENERIC).filter(t => !(t >= 0x7E0 && t <= 0x7E7)).forEach(t => pairs.push([t, t + 8]));
+    }
+    return pairs.map(([t, r]) => row(t, r, names));
+  }
   const QUICK_TX = ['7E0', '7E1', '740', '752', '745', '743', '744', '742', '74D', '74E', '758', '755', '74C', '712', '751', '750', '75C'];
 
   function createEngine(send, wanted = () => Object.keys(PIDS)) {
@@ -180,11 +221,58 @@ const ObdBle = (() => {
       return { dtc: dtc2(dtcBytes[0], dtcBytes[1]), values };
     }
 
-    async function scanEcu([code, name, desc, tx, rx]) {
+    // Mode 06 (CAN): on-board test results. Each record: test id, unit/scaling id, value, min, max.
+    const MID_NAMES = { 0x01: 'Sonde O2 amont B1', 0x02: 'Sonde O2 aval B1', 0x05: 'Sonde O2 amont B2', 0x06: 'Sonde O2 aval B2', 0x21: 'Catalyseur B1', 0x22: 'Catalyseur B2',
+      0x31: 'EGR / VVT B1', 0x32: 'EGR / VVT B2', 0x35: 'Pression de suralimentation', 0x39: 'EVAP fuite 0,150"', 0x3A: 'EVAP fuite 0,090"', 0x3B: 'EVAP fuite 0,040"', 0x3C: 'EVAP fuite 0,020"', 0x3D: 'Électrovanne de purge',
+      0x41: 'Chauffage sonde O2 amont B1', 0x42: 'Chauffage sonde O2 aval B1', 0x45: 'Chauffage sonde O2 amont B2', 0x46: 'Chauffage sonde O2 aval B2', 0x61: 'Filtre à particules B1', 0x62: 'Filtre à particules B2',
+      0x71: 'Air secondaire 1', 0x81: 'Système carburant B1', 0x82: 'Système carburant B2', 0x85: 'Pression de suralimentation B1', 0x90: 'NOx B1', 0x98: 'Capteur gaz d\'échappement B1',
+      0xA1: 'Ratés : général', 0xA2: 'Ratés : cylindre 1', 0xA3: 'Ratés : cylindre 2', 0xA4: 'Ratés : cylindre 3', 0xA5: 'Ratés : cylindre 4', 0xA6: 'Ratés : cylindre 5', 0xA7: 'Ratés : cylindre 6', 0xB0: 'Particules (PM) B1' };
+    const UAS = { 0x01: [1, ''], 0x02: [0.1, ''], 0x03: [0.01, ''], 0x04: [0.001, ''], 0x07: [0.25, 'tr/min'], 0x09: [1, 'km/h'], 0x0A: [0.122, 'mV'], 0x0B: [0.001, 'V'], 0x0C: [0.01, 'V'],
+      0x0E: [0.001, 'A'], 0x10: [1, 'ms'], 0x11: [100, 'ms'], 0x12: [1, 's'], 0x14: [1, 'Ω'], 0x16: [0.1, '°C', -40], 0x17: [0.01, 'kPa'], 0x1A: [1, 'kPa'], 0x1C: [0.01, '°'], 0x1E: [0.0000305, ''],
+      0x20: [0.0039062, ''], 0x22: [1, 'Hz'], 0x24: [1, ''], 0x25: [1, 'km'], 0x27: [0.01, 'g/s'], 0x2F: [0.01, '%'], 0x34: [1, 'min'], 0x35: [10, 'ms'],
+      0x81: [1, '', 0, true], 0x82: [0.1, '', 0, true], 0x83: [0.01, '', 0, true], 0x84: [0.001, '', 0, true], 0x8A: [0.122, 'mV', 0, true], 0x8B: [0.001, 'V', 0, true], 0x8C: [0.01, 'V', 0, true],
+      0x8E: [0.001, 'A', 0, true], 0x90: [1, 'ms', 0, true], 0x96: [0.1, '°C', 0, true], 0x9C: [0.01, '°', 0, true], 0xAF: [0.01, '%', 0, true], 0xFC: [0.01, 'kPa', 0, true], 0xFD: [0.001, 'kPa', 0, true] };
+    async function mode06() {
+      const mids = [];
+      for (let base = 0; base <= 0xE0; base += 0x20) {
+        const b = hexBytes(await send('06' + hx([base]), 3000).catch(() => ''));
+        const i = b.findIndex((x, k) => x === 0x46 && b[k + 1] === base);
+        if (i < 0 || b.length < i + 6) { if (!base) throw httpError(404, 'Ce véhicule ne fournit pas les tests embarqués (mode 06).'); break; }
+        const mask = ((b[i + 2] << 24) | (b[i + 3] << 16) | (b[i + 4] << 8) | b[i + 5]) >>> 0;
+        for (let k = 0; k < 31; k++) if (mask & (1 << (31 - k))) mids.push(base + k + 1);
+        if (!(mask & 1)) break;
+      }
+      const tests = [];
+      for (const mid of mids) {
+        const b = hexBytes(await send('06' + hx([mid]), 3000).catch(() => ''));
+        for (let i = 0; i + 1 < b.length; i++) {
+          if (b[i] !== 0x46 || b[i + 1] !== mid) continue;
+          let j = i + 2;
+          while (j + 8 <= b.length) {
+            const [tid, uas, v1, v2, n1, n2, x1, x2] = b.slice(j, j + 8);
+            if (tid === 0x46 && uas === mid) { j += 2; continue; }   // next frame header of a multi-line answer
+            const u = UAS[uas] || [1, ''], signed = u[3];
+            const num = (h, l) => { let r = h * 256 + l; if (signed && r >= 0x8000) r -= 0x10000; return r; };
+            const val = num(v1, v2), min = num(n1, n2), max = num(x1, x2);
+            const sc = r => Math.round((r * u[0] + (u[2] || 0)) * 1000) / 1000;
+            tests.push({ mid, tid, name: (MID_NAMES[mid] || 'Moniteur ' + hx([mid])) + (tid ? ' · test ' + hx([tid]) : ''), value: sc(val), min: sc(min), max: sc(max), unit: u[1], pass: val >= min && val <= max });
+            j += 8;
+          }
+          break;
+        }
+      }
+      return { tests };
+    }
+
+    async function scanEcu([code, name, desc, tx, rx], brand = 'renault') {
+      const renault = brand === 'renault';
       await send('ATSH ' + tx); await send('ATFCSH ' + tx); await send('ATCRA ' + rx);
+      await send('ATST 19').catch(() => '');               // short wait while probing absent addresses (~100 ms)
       const probe = await send('3E00', 1200).catch(() => '');
-      if (!hexBytes(probe).length) return null;
-      const ecu = { address: tx, rx, code, name, desc, reachable: true, part: null, sw: null, protocol: null, dtcs: [] };
+      await send('ATST 32').catch(() => '');
+      const pb = hexBytes(probe);
+      if (!pb.length || !(pb[0] === 0x7E || pb[0] === 0x7F)) return null;
+      const ecu = { address: tx, rx, code, name, desc, brand, reachable: true, part: null, sw: null, protocol: null, dtcs: [] };
       const p = udsPos(await send('22F187', 2000).catch(() => ''), 0x22);
       if (p) {
         ecu.protocol = 'UDS';
@@ -193,19 +281,27 @@ const ObdBle = (() => {
         const did = async c => { const r = udsPos(await send(c, 2000).catch(() => ''), 0x22); return r ? hx(r.slice(2)) : ''; };
         ecu.identRaw = { f1a0: await did('22F1A0'), f18a: await did('22F18A'), f194: await did('22F194'), f195: s ? hx(s.slice(2)) : '' };
         ecu.sw = s ? asciiRuns(s.slice(2))[0] || null : null;
-      } else {
+        if (!renault) {
+          const sysName = udsPos(await send('22F197', 2000).catch(() => ''), 0x22);
+          const label = sysName ? asciiRuns(sysName.slice(2))[0] : null;
+          if (label && /^Calculateur /.test(ecu.name)) ecu.name = label.replace(/\s+/g, ' ').trim();
+          const hw = udsPos(await send('22F191', 2000).catch(() => ''), 0x22);
+          ecu.hw = hw ? asciiRuns(hw.slice(2))[0] || null : null;
+        }
+      } else if (renault) {
         const k = udsPos(await send('2180', 2500).catch(() => ''), 0x21);
         if (k) { ecu.protocol = 'KWP'; ecu.identRaw = { kwp: '61' + hx(k) }; const runs = asciiRuns(k.slice(1)); ecu.part = runs[0] || null; ecu.sw = runs[1] || null; }
       }
-      const u = udsPos(await send('1902AF', 3000).catch(() => ''), 0x19);
+      let u = udsPos(await send(renault ? '1902AF' : '1902FF', 3000).catch(() => ''), 0x19);
+      if (!u && !renault) { await send('1003', 2000).catch(() => ''); u = udsPos(await send('1902FF', 3000).catch(() => ''), 0x19); }
       if (u) {
         ecu.protocol = ecu.protocol || 'UDS';
         for (let i = 2; i + 3 < u.length; i += 4) {
           const [h, m, l, st] = u.slice(i, i + 4);
           if (!h && !m && !l) continue;
-          ecu.dtcs.push({ code: dtc2(h, m), type: l.toString(16).toUpperCase().padStart(2, '0'), active: !!(st & 1) });
+          ecu.dtcs.push({ code: dtc2(h, m), type: l.toString(16).toUpperCase().padStart(2, '0'), raw: (h << 16) | (m << 8) | l, st, active: !!(st & 1) });
         }
-      } else {
+      } else if (renault) {
         let k = udsPos(await send('17FF00', 3000).catch(() => ''), 0x17);
         if (!k) { await send('10C0').catch(() => ''); k = udsPos(await send('17FF00', 3000).catch(() => ''), 0x17); }
         if (k) {
@@ -213,7 +309,7 @@ const ObdBle = (() => {
           for (let i = 1; i + 2 < k.length && ecu.dtcs.length < k[0]; i += 3) {
             const [h, l, st] = k.slice(i, i + 3);
             if (!h && !l) continue;
-            ecu.dtcs.push({ code: dtc2(h, l), type: null, active: !!(st & 0x40) });
+            ecu.dtcs.push({ code: dtc2(h, l), type: null, raw: (h << 8) | l, st, active: !!(st & 0x20) });
           }
         }
       }
@@ -223,8 +319,8 @@ const ObdBle = (() => {
     async function resetBus() {
       for (const c of ['ATCRA', 'ATFCSM 0', 'ATSH 7DF']) await send(c).catch(() => '');
     }
-    async function renaultScan(all, onProgress = () => {}) {
-      const list = all ? ECUS : ECUS.filter(e => QUICK_TX.includes(e[3]));
+    async function renaultScan(all, onProgress = () => {}, brand = 'renault') {
+      const list = candidates(brand, all);
       const found = [];
       scanning = true;
       if (liveBusy) await liveBusy.catch(() => {});
@@ -232,20 +328,27 @@ const ObdBle = (() => {
       try {
         for (let i = 0; i < list.length; i++) {
           onProgress({ index: i, total: list.length, current: list[i], found });
-          const e = await scanEcu(list[i]).catch(() => null);
+          const e = await scanEcu(list[i], brand === 'unknown' ? (list[i][0] ? 'renault' : 'generic') : brand).catch(() => null);
           if (e) { found.push(e); onProgress({ index: i, total: list.length, current: list[i], found, hit: e }); }
         }
       } finally { await resetBus(); scanning = false; }
-      lastScan = { t: Date.now(), all, ecus: found };
+      lastScan = { t: Date.now(), all, brand, ecus: found };
       return lastScan;
     }
     async function clearEcu(tx) {
-      const e = ECUS.find(r => r[3] === tx);
+      const found = lastScan && lastScan.ecus.find(x => x.address === tx);
+      const e = found ? [found.code, found.name, '', found.address, found.rx] : ECUS.find(r => r[3] === tx);
       if (!e) throw httpError(404, 'Calculateur inconnu');
+      const renault = !found || found.brand === 'renault' || !found.brand;
       await send('ATSH ' + e[3]); await send('ATFCSH ' + e[3]); await send('ATCRA ' + e[4]);
       await send('ATFCSD 300000').catch(() => ''); await send('ATFCSM 1').catch(() => '');
       try {
         if (udsPos(await send('14FFFFFF', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'UDS' };
+        if (!renault) {
+          await send('1003', 2000).catch(() => '');
+          if (udsPos(await send('14FFFFFF', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'UDS' };
+          throw httpError(502, 'Le calculateur a refusé l\'effacement (conditions non remplies ou défaut toujours présent).');
+        }
         if (udsPos(await send('14FF00', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'KWP' };
         await send('10C0').catch(() => '');
         if (udsPos(await send('14FF00', 4000).catch(() => ''), 0x14)) return { cleared: true, protocol: 'KWP' };
@@ -434,6 +537,7 @@ const ObdBle = (() => {
       if (route === '/live/supported') return [...(await supportedPids())].filter(p => PIDS[p]);
       if (route === '/diagnostics/monitors') return monitors();
       if (route === '/diagnostics/freeze') return freeze();
+      if (route === '/diagnostics/mode06') return mode06();
       if (route === '/diagnostics/dtc' && method === 'DELETE') { await send('04'); return { status: 'cleared' }; }
       if (route === '/diagnostics/dtc') {
         const stored = parseDtcs(await send('03'), 0x43), pending = parseDtcs(await send('07'), 0x47), perm = parseDtcs(await send('0A'), 0x4A);
@@ -445,7 +549,7 @@ const ObdBle = (() => {
         for (const e of (lastScan ? lastScan.ecus : [])) {
           for (const d of e.dtcs) {
             if (codes.some(c => c.code === d.code && c.ecu === e.address)) continue;
-            codes.push({ code: d.code, severity: d.active ? 'active' : 'stored', ecu_name: e.name, ecu: e.address, description: d.type ? `Type de défaut ${d.type}` : '' });
+            codes.push({ code: d.code, severity: d.active ? 'active' : 'stored', ecu_name: e.name, ecu: e.address, description: d.label || (d.type ? `Type de défaut ${d.type}` : '') });
           }
         }
         return { codes, total_active: codes.filter(c => c.severity === 'active').length, total_pending: pending.length, total_stored: stored.length };
@@ -457,7 +561,7 @@ const ObdBle = (() => {
         return { vin, source };
       }
       if (route === '/ecu/list' && lastScan) {
-        return lastScan.ecus.map(e => ({ address: e.address, name: e.name, reachable: true, dtc_count: e.dtc_count, part: e.part, sw: e.sw, protocol: e.protocol, rx: e.rx, code: e.code, identRaw: e.identRaw || null }));
+        return lastScan.ecus.map(e => ({ address: e.address, name: e.name, reachable: true, dtc_count: e.dtc_count, part: e.part, sw: e.sw, hw: e.hw || null, protocol: e.protocol, rx: e.rx, code: e.code, brand: e.brand, identRaw: e.identRaw || null }));
       }
       if (route === '/ecu/list') {
         const responders = Object.keys(byHeader(await withHeaders('0100'))).sort();
@@ -487,9 +591,9 @@ const ObdBle = (() => {
           notes: ecus.length ? [] : ["Aucun calculateur ne fournit le kilométrage OBD standard (PID A6, surtout sur véhicules récents). Saisissez le kilométrage du compteur pour comparer."] };
       }
       if (route.startsWith('/actuators') || route.startsWith('/coding') || route === '/services/run') {
-        throw httpError(501, "Bloqué par sécurité : les tests actifs, procédures et codages Renault demandent la base de commandes constructeur (DDT, fichier ecu.zip), absente d'AUTORYX. Sans elle, une commande approximative pourrait dérégler un calculateur. Lecture, scan et effacement des codes restent disponibles.");
+        throw httpError(501, "En Bluetooth direct, les tests, procédures et configurations passent par la base constructeur : Scan complet, puis « Ouvrir » sur un calculateur.");
       }
-      if (route === '/ecu/scan') return renaultScan(!!(opts.all), opts.onProgress);
+      if (route === '/ecu/scan') return renaultScan(!!(opts.all), opts.onProgress, opts.brand || brandOf(opts.vin));
       if (route === '/ecu/clear') {
         const r = await clearEcu(opts.address);
         if (lastScan) { const e = lastScan.ecus.find(x => x.address === opts.address); if (e) { e.dtcs = []; e.dtc_count = 0; } }
@@ -509,6 +613,7 @@ const ObdBle = (() => {
     handle.lastScan = () => lastScan;
     handle.ecuCount = () => ECUS.length;
     handle.quickCount = () => ECUS.filter(e => QUICK_TX.includes(e[3])).length;
+    handle.candidates = (brand, all) => candidates(brand, all);
     return handle;
   }
 
@@ -619,6 +724,6 @@ const ObdBle = (() => {
     try { dev && dev.gatt.connected && dev.gatt.disconnect(); } catch {}
   }
 
-  return { connect, disconnect, send, link, note, createEngine, hexBytes, pidData, byHeader, parseVin, parseDtcs, PIDS };
+  return { brandOf, connect, disconnect, send, link, note, createEngine, hexBytes, pidData, byHeader, parseVin, parseDtcs, PIDS };
 })();
 if (typeof module !== 'undefined') module.exports = ObdBle;
